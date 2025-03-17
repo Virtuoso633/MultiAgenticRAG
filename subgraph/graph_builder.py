@@ -87,7 +87,7 @@ def _build_retrievers(documents: list[Document], vectorstore: Chroma) -> Ensembl
     """
     Build and return an ensemble retriever (without Cohere compression).
     """
-    # Create base retrievers
+    # Create base retriever
     retriever_bm25 = BM25Retriever.from_documents(documents, search_kwargs={"k": TOP_K})
     retriever_vanilla = vectorstore.as_retriever(search_type="similarity", search_kwargs={"k": TOP_K})
     retriever_mmr = vectorstore.as_retriever(search_type="mmr", search_kwargs={"k": TOP_K})
