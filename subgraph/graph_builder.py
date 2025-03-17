@@ -1,8 +1,11 @@
 ### Build Index
 
+import os
 from langchain_community.vectorstores import Chroma
-from langchain_openai import OpenAIEmbeddings
-from langchain.retrievers import EnsembleRetriever, BM25Retriever
+#from langchain_groq import GroqEmbeddings
+from langchain_community.embeddings import HuggingFaceEmbeddings
+from langchain.retrievers.ensemble import EnsembleRetriever
+from langchain_community.retrievers import BM25Retriever
 from dotenv import load_dotenv
 from subgraph.graph_states import ResearcherState, QueryState
 from utils.prompt import GENERATE_QUERIES_SYSTEM_PROMPT
@@ -12,15 +15,23 @@ from typing import Any, Literal, TypedDict, cast
 from langchain_core.messages import BaseMessage
 from langchain_core.runnables import RunnableConfig
 from langgraph.graph import END, START, StateGraph
-from langchain_openai import ChatOpenAI
+from langchain_groq import ChatGroq
 from langgraph.types import Send
 
 
-from langchain.retrievers.contextual_compression import ContextualCompressionRetriever
-from langchain_cohere import CohereRerank
-from langchain_community.llms import Cohere
+#Removed the Cohere Specific Imports
+
+from rank_llm.rerank.rankllm import RankLLM
+from groq_rank_llm import GroqRankLLM
+
+#New imports
+from langchain_core.runnables import chain
+from operator import itemgetter
+
 import logging
+import os
 from utils.utils import config
+
 
 load_dotenv()
 
@@ -32,19 +43,18 @@ VECTORSTORE_DIRECTORY = config["retriever"]["directory"]
 TOP_K = config["retriever"]["top_k"]
 TOP_K_COMPRESSION = config["retriever"]["top_k_compression"]
 ENSEMBLE_WEIGHTS = config["retriever"]["ensemble_weights"]
-COHERE_RERANK_MODEL = config["retriever"]["cohere_rerank_model"]
+#COHERE_RERANK_MODEL = config["retriever"]["cohere_rerank_model"]
 
 def _setup_vectorstore() -> Chroma:
     """
     Set up and return the Chroma vector store instance.
     """
-    embeddings = OpenAIEmbeddings()
+    embeddings = HuggingFaceEmbeddings(model_name="all-mpnet-base-v2")
     return Chroma(
         collection_name=VECTORSTORE_COLLECTION,
         embedding_function=embeddings,
         persist_directory=VECTORSTORE_DIRECTORY
     )
-
 
 
 def _load_documents(vectorstore: Chroma) -> list[Document]:
@@ -73,17 +83,9 @@ def _load_documents(vectorstore: Chroma) -> list[Document]:
 
 
 
-def _build_retrievers(documents: list[Document], vectorstore: Chroma) -> ContextualCompressionRetriever:
+def _build_retrievers(documents: list[Document], vectorstore: Chroma) -> EnsembleRetriever:
     """
-    Build and return a compression retriever that includes
-    an ensemble retriever and Cohere-based contextual compression.
-
-    Args:
-        documents (list[Document]): List of Document objects.
-        vectorstore (Chroma): The vector store to use for building retrievers.
-
-    Returns:
-        ContextualCompressionRetriever: A compression retriever that can be used to fetch and re-rank documents.
+    Build and return an ensemble retriever (without Cohere compression).
     """
     # Create base retrievers
     retriever_bm25 = BM25Retriever.from_documents(documents, search_kwargs={"k": TOP_K})
@@ -96,23 +98,7 @@ def _build_retrievers(documents: list[Document], vectorstore: Chroma) -> Context
         weights=ENSEMBLE_WEIGHTS,
     )
 
-    # Set up Cohere re-ranking
-    compressor = CohereRerank(top_n=TOP_K_COMPRESSION, model=COHERE_RERANK_MODEL)
-
-    # Build compression retriever
-    compression_retriever = ContextualCompressionRetriever(
-        base_compressor=compressor,
-        base_retriever=ensemble_retriever,
-    )
-
-    return compression_retriever
-
-
-vectorstore = _setup_vectorstore()
-documents = _load_documents(vectorstore)
-
-# Build the compression retriever (with Cohere inside)
-compression_retriever = _build_retrievers(documents, vectorstore)
+    return ensemble_retriever
 
 
 async def generate_queries(
@@ -134,7 +120,7 @@ async def generate_queries(
         queries: list[str]
 
     logger.info("---GENERATE QUERIES---")
-    model = ChatOpenAI(model="gpt-4o-mini-2024-07-18", temperature=0)
+    model = ChatGroq(groq_api_key=os.environ["GROQ_API_KEY"], model_name="llama3-70b-8192",max_tokens=2000, streaming=True)
     messages = [
         {"role": "system", "content": GENERATE_QUERIES_SYSTEM_PROMPT},
         {"role": "human", "content": state.question},
@@ -149,23 +135,62 @@ async def generate_queries(
 async def retrieve_and_rerank_documents(
     state: QueryState, *, config: RunnableConfig
 ) -> dict[str, list[Document]]:
-    """Retrieve documents based on a given query.
-
-    This function uses a retriever to fetch relevant documents for a given query.
-
-    Args:
-        state (QueryState): The current state containing the query string.
-        config (RunnableConfig): Configuration with the retriever used to fetch documents.
-
-    Returns:
-        dict[str, list[Document]]: A dictionary with a 'documents' key containing the list of retrieved documents.
-    """
+    """Retrieve documents and rerank them using rank_llm."""
     logger.info("---RETRIEVING DOCUMENTS---")
     logger.info(f"Query for the retrieval process: {state.query}")
 
-    response = compression_retriever.invoke(state.query)
+    # Retrieve the initial set of documents
+    documents = ensemble_retriever.get_relevant_documents(state.query)
+    logger.info(f"Number of documents initially retrieved: {len(documents)}")
 
-    return {"documents": response}
+    #Rerank only if there are documents to rerank
+    if documents:
+        MAX_DOC_LENGTH = 2000
+        # Prepare the documents for rank_llm
+        texts = [doc.page_content[:MAX_DOC_LENGTH]  for doc in documents]
+
+        # Define the query prompt with placeholders
+        query_prompt = (
+            "<s>[INST] You are a helpful, respectful, and honest assistant. Always answer as helpfully as possible, "
+            "while being safe. Your answers should not include any harmful, unethical, racist, sexist, toxic, dangerous, or illegal content. "
+            "Please ensure that your responses are socially unbiased and positive in nature.\n\n"
+            "If a question does not make any sense, or is not factually coherent, explain why instead of answering something incorrect. "
+            "If you don't know the answer to a question, please don't share false information.[/INST] "
+            "Rank the documents based on the query.\n\nQuery: {query}\nDocuments: {documents} [/INST]"
+        )
+
+        # Initialize the LLMRanker
+        ranker = GroqRankLLM(
+            model_name="llama3-70b-8192",  # Ensure this model is available and compatible
+            prompt=query_prompt,
+            device="cpu",  # Adjust based on your hardware (e.g., 'cuda' for GPU)
+            max_tokens=2000  # Adjust as needed
+        )
+
+        # Rank the documents using rank_llm
+        ranked_results = ranker.rank(query=state.query, texts=texts)
+
+        # Filter indices to keep only valid ones
+        valid_indices = [i for i in ranked_results if 0 <= i < len(documents)]
+
+        if not valid_indices:
+            logger.warning("Ranker returned no valid indices. Falling back to default ordering.")
+            ranked_documents = documents
+        else:
+            # Create a new list of documents in the ranked order
+            ranked_documents = [documents[i] for i in valid_indices]
+            logger.info(f"Number of documents after reranking: {len(ranked_documents)}")
+    else:
+        ranked_documents = []
+
+    return {"documents": ranked_documents}
+
+
+vectorstore = _setup_vectorstore()
+documents = _load_documents(vectorstore)
+
+# Build the ensemble retriever (without Cohere)
+ensemble_retriever = _build_retrievers(documents, vectorstore)  # Changed to build only the EnsembleRetriever
 
 
 def retrieve_in_parallel(state: ResearcherState) -> list[Send]:

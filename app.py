@@ -6,9 +6,7 @@ from main_graph.graph_builder import InputState, graph
 from langgraph.types import Command
 import asyncio
 import uuid
-#!/usr/bin/env python3
-
-import asyncio
+import os
 import time
 import builtins
 
@@ -22,20 +20,26 @@ async def process_query(query):
         if c.additional_kwargs.get("tool_calls"):
             print(c.additional_kwargs.get("tool_calls")[0]["function"].get("arguments"), end="", flush=True)
         if c.content:
-            time.sleep(0.05)
+            await asyncio.sleep(0.5)  # Non-blocking delay between chunks.
             print(c.content, end="", flush=True)
+            
+    # Add a 60-second delay between steps.
+    await asyncio.sleep(60)
 
-    if len(graph.get_state(thread)[-1]) > 0:
-        if len(graph.get_state(thread)[-1][0].interrupts) > 0:
-            response = input("\nThe response may contain uncertain information. Retry the generation? If yes, press 'y': ")
-            if response.lower() == 'y':
-                async for c, metadata in graph.astream(Command(resume=response), stream_mode="messages", config=thread):
-                    if c.additional_kwargs.get("tool_calls"):
-                        print(c.additional_kwargs.get("tool_calls")[0]["function"].get("arguments"), end="")
-                    if c.content:
-                        time.sleep(0.05)
-                        print(c.content, end="", flush=True)
-
+    # Step 2: Check for interrupts in the graph's state.
+    current_state = graph.get_state(thread)
+    if current_state and current_state[-1] and current_state[-1][0].interrupts:
+        response = input("\nThe response may contain uncertain information. Retry the generation? If yes, press 'y': ")
+        if response.lower() == 'y':
+            async for c, metadata in graph.astream(Command(resume=response), stream_mode="messages", config=thread):
+                if c.additional_kwargs.get("tool_calls"):
+                    print(c.additional_kwargs.get("tool_calls")[0]["function"].get("arguments"), end="", flush=True)
+                if c.content:
+                    await asyncio.sleep(0.5)
+                    print(c.content, end="", flush=True)
+    
+    # Optionally, add a delay after processing the query.
+    await asyncio.sleep(60)
 
 async def main():
     input = builtins.input
@@ -46,6 +50,8 @@ async def main():
             print("Exiting...")
             break
         await process_query(query)
+        # Add a delay between processing different queries.
+        await asyncio.sleep(60)
 
 
 if __name__ == "__main__":

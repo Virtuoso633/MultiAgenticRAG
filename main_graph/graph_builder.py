@@ -7,11 +7,11 @@ conducting research, and formulating responses.
 """
 
 from typing import Any, Literal, TypedDict, cast
-
+import os
 from langchain_core.messages import BaseMessage
 from langchain_core.runnables import RunnableConfig
 from langgraph.graph import END, START, StateGraph
-from langchain_openai import ChatOpenAI
+from langchain_groq import ChatGroq
 from langgraph.types import interrupt, Command
 from main_graph.graph_states import AgentState, Router, GradeHallucinations, InputState
 from utils.prompt import ROUTER_SYSTEM_PROMPT, RESEARCH_PLAN_SYSTEM_PROMPT, MORE_INFO_SYSTEM_PROMPT, GENERAL_SYSTEM_PROMPT, CHECK_HALLUCINATIONS, RESPONSE_SYSTEM_PROMPT
@@ -22,6 +22,8 @@ from langgraph.graph import END, START, StateGraph
 from langgraph.checkpoint.memory import MemorySaver
 import logging
 from utils.utils import config
+from utils.summarizer import summarize_documents
+
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
@@ -33,11 +35,7 @@ logging.getLogger("openai").propagate = False
 logging.getLogger("urllib3").propagate = False
 logging.getLogger("httpx").propagate = False
 
-
-GPT_4o_MINI = config["llm"]["gpt_4o_mini"]
-GPT_4o = config["llm"]["gpt_4o"]
-TEMPERATURE = config["llm"]["temperature"]
-
+GROQ_MODEL = "llama3-70b-8192"
 
 async def analyze_and_route_query(
     state: AgentState, *, config: RunnableConfig
@@ -54,7 +52,7 @@ async def analyze_and_route_query(
     Returns:
         dict[str, Router]: A dictionary containing the 'router' key with the classification result (classification type and logic).
     """
-    model = ChatOpenAI(model=GPT_4o, temperature=TEMPERATURE, streaming=True)
+    model = ChatGroq(groq_api_key=os.environ["GROQ_API_KEY"], model_name=GROQ_MODEL, max_tokens=2000, streaming=True)
     messages = [
         {"role": "system", "content": ROUTER_SYSTEM_PROMPT}
     ] + state.messages
@@ -65,7 +63,6 @@ async def analyze_and_route_query(
     )
     return {"router": response}
     
-
 
 def route_query(
     state: AgentState,
@@ -111,15 +108,13 @@ async def create_research_plan(
 
         steps: list[str]
 
-    model = ChatOpenAI(model=GPT_4o_MINI, temperature=TEMPERATURE, streaming=True)
+    model = ChatGroq(groq_api_key=os.environ["GROQ_API_KEY"], model_name=GROQ_MODEL,max_tokens=2000, streaming=True)
     messages = [
         {"role": "system", "content": RESEARCH_PLAN_SYSTEM_PROMPT}
     ] + state.messages
     logging.info("---PLAN GENERATION---")
     response = cast(Plan, await model.with_structured_output(Plan).ainvoke(messages))
     return {"steps": response["steps"], "documents": "delete"}
-
-
 
 
 async def ask_for_more_info(
@@ -136,7 +131,7 @@ async def ask_for_more_info(
     Returns:
         dict[str, list[str]]: A dictionary with a 'messages' key containing the generated response.
     """
-    model = ChatOpenAI(model=GPT_4o_MINI, temperature=TEMPERATURE, streaming=True)
+    model = ChatGroq(groq_api_key=os.environ["GROQ_API_KEY"], model_name=GROQ_MODEL, max_tokens= 2000, streaming=True)
     system_prompt = MORE_INFO_SYSTEM_PROMPT.format(
         logic=state.router["logic"]
     )
@@ -201,7 +196,7 @@ async def respond_to_general_query(
     Returns:
         dict[str, list[str]]: A dictionary with a 'messages' key containing the generated response.
     """
-    model = ChatOpenAI(model=GPT_4o_MINI, temperature=TEMPERATURE, streaming=True)
+    model = ChatGroq(groq_api_key=os.environ["GROQ_API_KEY"], model_name=GROQ_MODEL, max_tokens=2000, streaming=True)
     system_prompt = GENERAL_SYSTEM_PROMPT.format(
         logic=state.router["logic"]
     )
@@ -275,12 +270,16 @@ async def check_hallucinations(
     Returns:
         dict[str, Router]: A dictionary containing the 'router' key with the classification result (classification type and logic).
     """
-    model = ChatOpenAI(model=GPT_4o_MINI, temperature=TEMPERATURE, streaming=True)
+    model = ChatGroq(groq_api_key=os.environ["GROQ_API_KEY"], model_name=GROQ_MODEL, max_tokens=2000, streaming=True)
+    
+    # Use the summarizer to reduce the document text.
+    summarized_docs = summarize_documents(state.documents) if state.documents else "No documents"
+    
     system_prompt = CHECK_HALLUCINATIONS.format(
-        documents=state.documents,
-        generation=state.messages[-1]
+        documents=state.documents if state.documents else "No documents",
+        generation=state.messages[-1] if state.messages else "No generation"
     )
-
+    
     messages = [
         {"role": "system", "content": system_prompt}
     ] + state.messages
@@ -290,23 +289,25 @@ async def check_hallucinations(
     return {"hallucination": response} 
 
 
-def human_approval(
-    state: AgentState,
-):
+def human_approval(state: AgentState):
+    if state.hallucination is None:
+        # Handle the None case appropriately
+        return "END"
     _binary_score = state.hallucination.binary_score
     if _binary_score == "1":
         return "END"
     else:
         retry_generation = interrupt(
-        {
-            "question": "Is this correct?",
-            "llm_output": state.messages[-1]
-        })
-
+            {
+                "question": "Is this correct?",
+                "llm_output": state.messages[-1]
+            }
+        )
         if retry_generation == "y":
             return "respond"
         else:
             return "END"
+
 
 
 
@@ -325,7 +326,7 @@ async def respond(
         dict[str, list[str]]: A dictionary with a 'messages' key containing the generated response.
     """
     logging.info("--- RESPONSE GENERATION STEP ---")
-    model = ChatOpenAI(model=GPT_4o, temperature=TEMPERATURE, streaming=True)
+    model = ChatGroq(groq_api_key=os.environ["GROQ_API_KEY"], model_name=GROQ_MODEL,max_tokens = 2000, streaming=True)
     context = format_docs(state.documents)
     prompt = RESPONSE_SYSTEM_PROMPT.format(context=context)
     messages = [{"role": "system", "content": prompt}] + state.messages
