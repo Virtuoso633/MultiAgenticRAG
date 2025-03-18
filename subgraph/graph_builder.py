@@ -32,7 +32,7 @@ from operator import itemgetter
 
 import logging
 from utils.utils import config
-\
+
 
 load_dotenv()
 
