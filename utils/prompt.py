@@ -1,3 +1,5 @@
+# utils/prompt.py
+
 """Default prompts."""
 
 # Retrieval graph
@@ -88,10 +90,15 @@ bank, not part of the conversation with the user.
 
 # Researcher graph
 
-GENERATE_QUERIES_SYSTEM_PROMPT = """\
-If the question is to be improved, understand the deep goal and generate 2 search queries to search for to answer the user's question. \
+# GENERATE_QUERIES_SYSTEM_PROMPT = """\
+# If the question is to be improved, understand the deep goal and generate 2 search queries to search for to answer the user's question. \
     
-"""
+# """
+GENERATE_QUERIES_SYSTEM_PROMPT = """\
+    Given a question, generate concise search queries to retrieve information.
+    Do not generate more than 3 queries.
+    Be specific in your queries.
+    """
 
 
 CHECK_HALLUCINATIONS = """You are a grader assessing whether an LLM generation is supported by a set of retrieved facts. 

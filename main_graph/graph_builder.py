@@ -1,3 +1,5 @@
+# main_graph/graph_builder.py
+
 """Main entrypoint for the conversational retrieval graph.
 
 This module defines the core structure and functionality of the conversational
@@ -6,6 +8,7 @@ and key functions for processing & routing user queries, generating research pla
 conducting research, and formulating responses.
 """
 
+import asyncio
 from typing import Any, Literal, TypedDict, cast
 import os
 from langchain_core.messages import BaseMessage
@@ -23,6 +26,7 @@ from langgraph.checkpoint.memory import MemorySaver
 import logging
 from utils.utils import config
 from utils.summarizer import summarize_documents
+from langchain_core.messages import SystemMessage
 
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -276,14 +280,15 @@ async def check_hallucinations(
     summarized_docs = summarize_documents(state.documents) if state.documents else "No documents"
     
     system_prompt = CHECK_HALLUCINATIONS.format(
-        documents=state.documents if state.documents else "No documents",
-        generation=state.messages[-1] if state.messages else "No generation"
+        documents=summarized_docs,  # Use summarized_docs
+        generation=state.messages[-1].content if state.messages else "No generation" #Get the content from messages.
     )
     
     messages = [
         {"role": "system", "content": system_prompt}
     ] + state.messages
     logging.info("---CHECK HALLUCINATIONS---")
+    
     response = cast(GradeHallucinations, await model.with_structured_output(GradeHallucinations).ainvoke(messages))
     
     return {"hallucination": response} 
@@ -291,23 +296,18 @@ async def check_hallucinations(
 
 def human_approval(state: AgentState):
     if state.hallucination is None:
-        # Handle the None case appropriately
+        logging.error("Hallucination state is None!")
         return "END"
-    _binary_score = state.hallucination.binary_score
-    if _binary_score == "1":
+
+    if state.hallucination.binary_score == "1":
         return "END"
     else:
-        retry_generation = interrupt(
+        return interrupt(
             {
-                "question": "Is this correct?",
-                "llm_output": state.messages[-1]
+                "question": "The response might not be accurate. Do you want to retry the generation? (y/n)",
+                "llm_output": state.messages[-1].content if state.messages else "No generation to show."
             }
         )
-        if retry_generation == "y":
-            return "respond"
-        else:
-            return "END"
-
 
 
 
@@ -327,13 +327,27 @@ async def respond(
     """
     logging.info("--- RESPONSE GENERATION STEP ---")
     model = ChatGroq(groq_api_key=os.environ["GROQ_API_KEY"], model_name=GROQ_MODEL,max_tokens = 2000, streaming=True)
-    context = format_docs(state.documents)
+    
+    # #Truncate each document individually before creating the context.
+    # truncated_documents = [Document(page_content = doc.page_content[:1500], metadata=doc.metadata) for doc in state.documents] #Setting the document size to 1500 characters.
+    # context = format_docs(truncated_documents)
+    
+    #Truncate each document individually before creating the context.
+    summarized_docs = summarize_documents(state.documents)
+    context = format_docs(summarized_docs)
+    
     prompt = RESPONSE_SYSTEM_PROMPT.format(context=context)
-    messages = [{"role": "system", "content": prompt}] + state.messages
+    # The `SystemMessage` type is part of the `langchain_core.messages`
+    messages = [SystemMessage(content=prompt)] + state.messages
+    
+    #Removed the full_prompt creation.
+    # full_prompt = [{"role": message.role, "content": message.content} for message in messages]
+    # prompt_string = "".join(message['content'] for message in full_prompt)
+    # logging.info(f"Estimated prompt size: {len(prompt_string)} characters") #Logging the size of the prompt
+    
     response = await model.ainvoke(messages)
 
     return {"messages": [response]}
-
 
 
 checkpointer = MemorySaver()

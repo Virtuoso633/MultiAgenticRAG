@@ -1,3 +1,5 @@
+# subgraph/graph_builder.py
+
 ### Build Index
 
 import os
@@ -145,7 +147,7 @@ async def retrieve_and_rerank_documents(
 
     #Rerank only if there are documents to rerank
     if documents:
-        MAX_DOC_LENGTH = 2000
+        MAX_DOC_LENGTH = 1500
         # Prepare the documents for rank_llm
         texts = [doc.page_content[:MAX_DOC_LENGTH]  for doc in documents]
 

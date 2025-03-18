@@ -1,3 +1,5 @@
+#app.py
+
 from subgraph.graph_states import ResearcherState
 from main_graph.graph_states import AgentState
 from utils.utils import config, new_uuid
@@ -9,6 +11,7 @@ import uuid
 import os
 import time
 import builtins
+import hnswlib
 
 thread = {"configurable": {"thread_id": new_uuid()}}
 #This is a question related to environmental context. tell me the data center PUE efficiency value in Dublin in 2021
@@ -26,18 +29,31 @@ async def process_query(query):
     # Add a 60-second delay between steps.
     await asyncio.sleep(60)
 
+
     # Step 2: Check for interrupts in the graph's state.
-    current_state = graph.get_state(thread)
-    if current_state and current_state[-1] and current_state[-1][0].interrupts:
-        response = input("\nThe response may contain uncertain information. Retry the generation? If yes, press 'y': ")
-        if response.lower() == 'y':
-            async for c, metadata in graph.astream(Command(resume=response), stream_mode="messages", config=thread):
-                if c.additional_kwargs.get("tool_calls"):
-                    print(c.additional_kwargs.get("tool_calls")[0]["function"].get("arguments"), end="", flush=True)
-                if c.content:
-                    await asyncio.sleep(0.5)
-                    print(c.content, end="", flush=True)
-    
+    while True:
+        current_state = graph.get_state(thread)
+        if current_state and current_state[-1] and current_state[-1][0].interrupts:
+            prompt = current_state[-1][0].interrupts["question"]
+            llm_output = current_state[-1][0].interrupts["llm_output"]
+
+            print(f"\nLLM Output: {llm_output}")  # Display LLM's output
+            response = input(f"\n{prompt} (y/n): ")  # Display question
+
+            if response.lower() == 'y':
+                # Resume the graph
+                async for c, metadata in graph.astream(Command(resume=response), stream_mode="messages", config=thread):
+                    if c.additional_kwargs.get("tool_calls"):
+                        print(c.additional_kwargs.get("tool_calls")[0]["function"].get("arguments"), end="", flush=True)
+                    if c.content:
+                        await asyncio.sleep(0.5)
+                        print(c.content, end="", flush=True)
+            else:
+                print("Ending process.")
+                break
+        else:
+            break
+
     # Optionally, add a delay after processing the query.
     await asyncio.sleep(60)
 

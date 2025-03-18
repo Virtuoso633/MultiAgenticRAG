@@ -5,12 +5,10 @@ langchain
 langchain-core
 langchain-community
 langchain-openai
-chromadb 
 langchain_cohere
 docling
-langchain
-chromadb
 cohere
 pypdf
 python-dotenv
 pyyaml
+chroma-hnswlib
