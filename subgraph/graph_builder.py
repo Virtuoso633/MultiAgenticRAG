@@ -3,6 +3,7 @@
 ### Build Index
 
 import os
+import re
 from langchain_community.vectorstores import Chroma
 #from langchain_groq import GroqEmbeddings
 from langchain_community.embeddings import HuggingFaceEmbeddings
@@ -20,7 +21,6 @@ from langgraph.graph import END, START, StateGraph
 from langchain_groq import ChatGroq
 from langgraph.types import Send
 
-
 #Removed the Cohere Specific Imports
 
 from rank_llm.rerank.rankllm import RankLLM
@@ -31,9 +31,8 @@ from langchain_core.runnables import chain
 from operator import itemgetter
 
 import logging
-import os
 from utils.utils import config
-
+\
 
 load_dotenv()
 
@@ -47,6 +46,8 @@ TOP_K_COMPRESSION = config["retriever"]["top_k_compression"]
 ENSEMBLE_WEIGHTS = config["retriever"]["ensemble_weights"]
 #COHERE_RERANK_MODEL = config["retriever"]["cohere_rerank_model"]
 
+
+
 def _setup_vectorstore() -> Chroma:
     """
     Set up and return the Chroma vector store instance.
@@ -57,6 +58,7 @@ def _setup_vectorstore() -> Chroma:
         embedding_function=embeddings,
         persist_directory=VECTORSTORE_DIRECTORY
     )
+
 
 
 def _load_documents(vectorstore: Chroma) -> list[Document]:
@@ -81,7 +83,6 @@ def _load_documents(vectorstore: Chroma) -> list[Document]:
         documents.append(Document(page_content=content, metadata=meta))
 
     return documents
-
 
 
 
@@ -169,22 +170,25 @@ async def retrieve_and_rerank_documents(
             max_tokens=2000  # Adjust as needed
         )
 
-        # Rank the documents using rank_llm
-        ranked_results = ranker.rank(query=state.query, texts=texts)
+        try:
+            # Use the corrected rank method
+            ranked_indices = ranker.rank(query=state.query, texts=texts)
+            logger.info(f"Ranked indices from Groq: {ranked_indices}")
 
-        # Filter indices to keep only valid ones
-        valid_indices = [i for i in ranked_results if 0 <= i < len(documents)]
-
-        if not valid_indices:
-            logger.warning("Ranker returned no valid indices. Falling back to default ordering.")
-            ranked_documents = documents
-        else:
-            # Create a new list of documents in the ranked order
-            ranked_documents = [documents[i] for i in valid_indices]
+            # Create ranked_documents using the indices
+            ranked_documents = [documents[i] for i in ranked_indices if 0 <= i < len(documents)]
             logger.info(f"Number of documents after reranking: {len(ranked_documents)}")
+
+
+        except Exception as e:
+            logger.error(f"Error during reranking: {e}")
+            ranked_documents = documents  # Fallback to original order
+
     else:
         ranked_documents = []
 
+    # Log only the number of documents, not their content
+    logger.info(f"Returning {len(ranked_documents)} ranked documents.")
     return {"documents": ranked_documents}
 
 
@@ -213,7 +217,6 @@ def retrieve_in_parallel(state: ResearcherState) -> list[Send]:
     return [
         Send("retrieve_and_rerank_documents", QueryState(query=query)) for query in state.queries
     ]
-
 
 
 builder = StateGraph(ResearcherState)

@@ -9,24 +9,33 @@ conducting research, and formulating responses.
 """
 
 import asyncio
-from typing import Any, Literal, TypedDict, cast
+import logging
 import os
-from langchain_core.messages import BaseMessage
+from typing import Any, Literal, Optional, TypedDict, Union, cast
+
 from langchain_core.runnables import RunnableConfig
 from langgraph.graph import END, START, StateGraph
 from langchain_groq import ChatGroq
 from langgraph.types import interrupt, Command
-from main_graph.graph_states import AgentState, Router, GradeHallucinations, InputState
-from utils.prompt import ROUTER_SYSTEM_PROMPT, RESEARCH_PLAN_SYSTEM_PROMPT, MORE_INFO_SYSTEM_PROMPT, GENERAL_SYSTEM_PROMPT, CHECK_HALLUCINATIONS, RESPONSE_SYSTEM_PROMPT
+
+
 from subgraph.graph_builder import researcher_graph
 from langchain_core.documents import Document
 from typing import Any, Literal, Optional, Union
-from langgraph.graph import END, START, StateGraph
+
 from langgraph.checkpoint.memory import MemorySaver
-import logging
+
 from utils.utils import config
 from utils.summarizer import summarize_documents
-from langchain_core.messages import SystemMessage
+from operator import itemgetter
+from langchain_core.messages import BaseMessage, SystemMessage
+from main_graph.graph_states import (AgentState, GradeHallucinations,
+                                    InputState, Router)
+from utils.prompt import (CHECK_HALLUCINATIONS, GENERAL_SYSTEM_PROMPT,
+                        MORE_INFO_SYSTEM_PROMPT, RESEARCH_PLAN_SYSTEM_PROMPT,
+                        RESPONSE_SYSTEM_PROMPT, ROUTER_SYSTEM_PROMPT)
+
+
 
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -62,10 +71,18 @@ async def analyze_and_route_query(
     ] + state.messages
     logging.info("---ANALYZE AND ROUTE QUERY---")
     logging.info(f"MESSAGES: {state.messages}")
-    response = cast(
-        Router, await model.with_structured_output(Router).ainvoke(messages)
-    )
-    return {"router": response}
+    
+    try:
+        response = cast(
+            Router, await model.with_structured_output(Router).ainvoke(messages)
+        )
+        logger.info(f"Router response: {response}")
+        return {"router": response}
+    except Exception as e:
+        logger.error(f"Error in analyze_and_route_query: {e}")
+        # Return a default Router object in case of failure
+        return {"router": Router(type="general", logic=f"Error: {e}")}
+
     
 
 def route_query(
@@ -82,7 +99,8 @@ def route_query(
     Raises:
         ValueError: If an unknown router type is encountered.
     """
-    _type = state.router["type"]
+    _type = itemgetter("type")(state.router) # Use itemgetter here
+    logger.info(f"Routing query. Type: {_type}")  # Log the routing decision
     if _type == "environmental":
         return "create_research_plan"
     elif _type == "more-info":
@@ -92,7 +110,6 @@ def route_query(
     else:
         raise ValueError(f"Unknown router type {_type}")
     
-
 
 async def create_research_plan(
     state: AgentState, *, config: RunnableConfig
@@ -117,9 +134,13 @@ async def create_research_plan(
         {"role": "system", "content": RESEARCH_PLAN_SYSTEM_PROMPT}
     ] + state.messages
     logging.info("---PLAN GENERATION---")
-    response = cast(Plan, await model.with_structured_output(Plan).ainvoke(messages))
-    return {"steps": response["steps"], "documents": "delete"}
-
+    try:
+        response = cast(Plan, await model.with_structured_output(Plan).ainvoke(messages))
+        logger.info(f"Research plan: {response['steps']}")  # Log the research plan
+        return {"steps": response["steps"], "documents": "delete"}
+    except Exception as e:
+        logger.error(f"Error in create_research_plan: {e}")
+        return {"steps": [], "documents": "delete"} # Return empty plan
 
 async def ask_for_more_info(
     state: AgentState, *, config: RunnableConfig
@@ -154,7 +175,7 @@ async def conduct_research(state: AgentState) -> dict[str, Any]:
 
     Returns:
         dict[str, list[str]]: A dictionary with 'documents' containing the research results and
-                              'steps' containing the remaining research steps.
+                            'steps' containing the remaining research steps.
 
     Behavior:
         - Invokes the researcher_graph with the first step of the research plan.
@@ -180,6 +201,8 @@ def check_finished(state: AgentState) -> Literal["respond", "conduct_research"]:
     Returns:
         Literal["respond", "conduct_research"]: The next step to take based on whether research is complete.
     """
+    
+    logger.info(f"Checking if research is finished. Remaining steps: {len(state.steps or [])}")  # Log remaining steps
     if len(state.steps or []) > 0:
         return "conduct_research"
     else:
@@ -289,27 +312,32 @@ async def check_hallucinations(
     ] + state.messages
     logging.info("---CHECK HALLUCINATIONS---")
     
-    response = cast(GradeHallucinations, await model.with_structured_output(GradeHallucinations).ainvoke(messages))
-    
+    # Get the raw response as a string
+    raw_response = await model.ainvoke(messages)
+    logger.info(f"Raw LLM response for hallucination check: {raw_response}")
+
+    try:
+        response = cast(GradeHallucinations, await model.with_structured_output(GradeHallucinations).ainvoke(messages))
+        logger.info(f"Hallucination check response: {response}")
+    except Exception as e:
+        logger.error(f"Error parsing hallucination check response: {e}")
+        response = None # Explicitly set to None on error
+
+
     return {"hallucination": response} 
 
 
-def human_approval(state: AgentState):
+def human_approval(state: AgentState) -> bool:
     if state.hallucination is None:
-        logging.error("Hallucination state is None!")
-        return "END"
+        logger.error("Hallucination state is None!")
+        return False
 
     if state.hallucination.binary_score == "1":
-        return "END"
+        return True  # No need to retry
     else:
-        return interrupt(
-            {
-                "question": "The response might not be accurate. Do you want to retry the generation? (y/n)",
-                "llm_output": state.messages[-1].content if state.messages else "No generation to show."
-            }
-        )
-
-
+        print(f"\nLLM Output: {state.messages[-1].content if state.messages else 'No generation to show.'}")
+        response = input("The response might not be accurate. Do you want to retry the generation? (y/n): ").strip().lower()
+        return response.lower() == 'y'
 
 async def respond(
     state: AgentState, *, config: RunnableConfig
@@ -353,17 +381,17 @@ async def respond(
 checkpointer = MemorySaver()
 
 builder = StateGraph(AgentState, input=InputState)
-builder.add_node(analyze_and_route_query)
+builder.add_node("analyze_and_route_query", analyze_and_route_query)  # Use string names for nodes
 builder.add_edge(START, "analyze_and_route_query")
 builder.add_conditional_edges("analyze_and_route_query", route_query)
-builder.add_node(create_research_plan)
-builder.add_node(ask_for_more_info)
-builder.add_node(respond_to_general_query)
-builder.add_node(conduct_research)
+builder.add_node("create_research_plan", create_research_plan)
+builder.add_node("ask_for_more_info", ask_for_more_info)
+builder.add_node("respond_to_general_query", respond_to_general_query)
+builder.add_node("conduct_research", conduct_research)
 builder.add_node("respond", respond)
-builder.add_node(check_hallucinations)
+builder.add_node("check_hallucinations", check_hallucinations)
 
-builder.add_conditional_edges("check_hallucinations", human_approval, {"END": END, "respond": "respond"})
+builder.add_conditional_edges("check_hallucinations", human_approval, {True: END, False: "respond"})
 
 builder.add_edge("create_research_plan", "conduct_research")
 builder.add_conditional_edges("conduct_research", check_finished)

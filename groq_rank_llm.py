@@ -1,4 +1,5 @@
 import os
+import re  # Import regular expression module
 from typing import Any, Dict, List, Optional, Tuple, Union
 
 from langchain_core.prompts import PromptTemplate
@@ -9,7 +10,7 @@ from pydantic import BaseModel, Field
 
 from rank_llm.data import Request, Result
 from rank_llm.rerank.rankllm import PromptMode, RankLLM
-import re
+
 
 class GroqRankLLM(RankLLM):
     def __init__(
@@ -86,6 +87,42 @@ class GroqRankLLM(RankLLM):
         """Abstract method to estimate the number of tokens in the model's output."""
         return 50
     
+    
+    def _extract_ranking_from_response(self, response: str, num_docs: int) -> List[int]:
+        """
+        Extracts and validates the document ranking from the LLM response.
+
+        Args:
+            response: The LLM's response as a string.
+            num_docs: The expected number of documents.
+
+        Returns:
+            A list of integers representing the document indices in ranked order,
+            or a list of sequential integers (0 to num_docs-1) if parsing fails.
+        """
+        # Regex to find lines starting with a number, followed by a document identifier
+        matches = re.findall(r'^\s*(\d+)\.\s*(.*?)(?:\n|$)', response, re.MULTILINE)
+
+        if not matches:
+            return list(range(num_docs)) # Return default order if it fails
+
+        ranking = []
+        for rank_str, doc_identifier in matches:
+            try:
+                # Convert the extracted rank to an integer (optional, based on your needs)
+                rank = int(rank_str) -1 #list is 0 indexed
+                ranking.append(rank) # Append the rank
+
+            except ValueError:
+                continue    # Skip lines where conversion fails
+
+        # Return the default sequential order if parsing fails or the rank is greater than the expected number of documents.
+        if not ranking:
+            return list(range(num_docs))
+
+        return ranking
+    
+    
     def rank(self, query: str, texts: List[str]) -> List[int]:
         """
         Generate a ranking for the given texts based on the query.
@@ -99,12 +136,7 @@ class GroqRankLLM(RankLLM):
         # Run the LLM with the constructed prompt.
         output, _ = self.run_llm(prompt)
         
-        # Parse the output to extract ranking indices.
-        # For instance, if the output is expected to be a comma-separated list of indices like "2,0,1":
-        ranking = [int(num) for num in output.split(",") if num.strip().isdigit()]
-        
-        # Alternatively, if your output format is different, adjust the parsing logic accordingly.
-        return ranking
+        return self._extract_ranking_from_response(output, len(texts))
 
     def rerank_batch(
         self,
@@ -116,7 +148,7 @@ class GroqRankLLM(RankLLM):
         **kwargs: Any,
     ) -> List[Result]:
         """Reranks a list of requests using the RankLLM model_coordinator."""
-        #This implementation uses run_llm_batched to generate the ranking
+        # This implementation uses run_llm_batched to generate the ranking
         new_requests = []
 
         for req in requests:
@@ -135,7 +167,8 @@ class GroqRankLLM(RankLLM):
             new_candidates = []
 
             for score_idx, candidate in enumerate(request.candidates):
-                candidate.score = int(re.search(r'\d+', o[0]).group()) # set score to the first int in the string which is the rank
+                candidate.score = int(
+                    re.search(r'\d+', o[0]).group())  # set score to the first int in the string which is the rank
                 new_candidates.append(candidate)
 
             results.append(Result(query=request.query, candidates=new_candidates, invocations_history=[]))
