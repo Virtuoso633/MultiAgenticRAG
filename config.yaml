@@ -3,7 +3,7 @@ retriever:
   headers_to_split_on:
     - ["#", "Header 1"]
     - ["##", "Header 2"]
-  load_documents: True
+  load_documents: False
   collection_name: rag-chroma-google
   directory: vector_db
   top_k: 3
