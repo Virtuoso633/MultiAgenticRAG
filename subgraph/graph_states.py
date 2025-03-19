@@ -16,7 +16,6 @@ class QueryState:
     query: str
 
 
-
 @dataclass(kw_only=True)
 class ResearcherState:
     """State of the researcher graph / agent."""

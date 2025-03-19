@@ -1,4 +1,4 @@
-#main_graph/graph_builder.py
+# main_graph/graph_builder.py
 
 """Main entrypoint for the conversational retrieval graph.
 
@@ -322,13 +322,17 @@ async def check_hallucinations(
         logger.info(f"Hallucination check response: {response}")
     except Exception as e:
         logger.error(f"Error parsing hallucination check response: {e}")
-        response = None # Explicitly set to None on error
+        # response = None # Explicitly set to None on error
+        fallback_response = GradeHallucinations(binary_score="0")  # Create fallback object LOCALLY
+        return {"hallucination": fallback_response}  # Return the fallback
 
 
     return {"hallucination": response} 
 
 
 def human_approval(state: AgentState) -> bool:
+    logging.info("---HUMAN APPROVAL NODE---") # Make sure this logging is present
+    logging.info(f"State Hallucination: {state.hallucination}") # And this logging
     if state.hallucination is None:
         logger.error("Hallucination state is None!")
         print(f"\nLLM Output: {state.messages[-1].content if state.messages else 'No generation to show.'}")
@@ -428,7 +432,7 @@ def _extract_answer(text: str) -> str:
     if text.startswith("I am sorry, but I cannot answer that question"):
         return text
 
-     # Find citations
+    # Find citations
     citations = re.findall(r'\[(\d+)\]', text)
     # Remove citation text, preserving order and removing duplicates
     seen_citations = set()
