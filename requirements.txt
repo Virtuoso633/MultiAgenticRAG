@@ -4,6 +4,8 @@ chromadb
 langchain
 langchain-core
 langchain-community
+langchain-huggingface
+langchain-chroma
 langchain-openai
 langchain_cohere
 docling
