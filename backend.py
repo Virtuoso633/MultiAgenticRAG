@@ -2,7 +2,6 @@
 
 import asyncio
 from typing import AsyncGenerator
-import logging
 
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
@@ -11,11 +10,7 @@ from langgraph.types import Command
 from main_graph.graph_builder import graph  # Import your LangGraph
 from main_graph.graph_states import InputState
 from utils.utils import new_uuid
-# Configure logger
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
 
-app = FastAPI()
 app = FastAPI()
 
 # CORS (Cross-Origin Resource Sharing) setup: Allow requests from your frontend
@@ -35,7 +30,6 @@ app.add_middleware(
 # Store pending interruptions per client
 pending_interruptions = {}
 
-# In backend.py, update the process_graph_stream function
 
 async def process_graph_stream(query: str, websocket: WebSocket, client_id: str) -> AsyncGenerator:
     """Processes a query using the LangGraph and streams results."""
@@ -59,58 +53,31 @@ async def process_graph_stream(query: str, websocket: WebSocket, client_id: str)
 
             await asyncio.sleep(0.05)
 
-            # Handle interruptions - UPDATED CODE
-            try:
-                # Check if this is an Interrupt instance
-                if hasattr(chunk, '_key') and chunk._key == "interrupt":
-                    interrupt_data = chunk.value
-                    prompt = interrupt_data.get("question", "Do you want to retry the generation? (y/n)")
-                    llm_output = interrupt_data.get("llm_output", "No output available")
-                    binary_score = chunk.hallucination.binary_score if hasattr(chunk, "hallucination") and chunk.hallucination else "0"
+            # Handle interruptions
+            if hasattr(chunk, 'interrupts') and chunk.interrupts:
+                prompt = chunk.interrupts["question"]
+                llm_output = chunk.interrupts["llm_output"]
+                binary_score = chunk.hallucination.binary_score if chunk.hallucination else "N/A"  # Safe access
 
-                    # Store interruption state
-                    pending_interruptions[client_id] = {
-                        "thread_id": thread_id,
-                        "config": config
+                # Store interruption state
+                pending_interruptions[client_id] = {
+                    "thread_id": thread_id,
+                    "config": config
+                }
+
+                await websocket.send_json({
+                    "interrupt": {
+                        "question": prompt,
+                        "llm_output": llm_output,
+                        "binary_score": binary_score
                     }
+                })
 
-                    await websocket.send_json({
-                        "interrupt": {
-                            "question": prompt,
-                            "llm_output": llm_output,
-                            "binary_score": binary_score
-                        }
-                    })
-                    return  # Stop processing until frontend responds
-                
-                # Alternative approach - check for interrupts field
-                elif hasattr(chunk, 'interrupts') and chunk.interrupts:
-                    prompt = chunk.interrupts.get("question", "Do you want to retry the generation? (y/n)")
-                    llm_output = chunk.interrupts.get("llm_output", "No output available")
-                    binary_score = chunk.hallucination.binary_score if hasattr(chunk, "hallucination") and chunk.hallucination else "0"
-
-                    # Store interruption state
-                    pending_interruptions[client_id] = {
-                        "thread_id": thread_id,
-                        "config": config
-                    }
-
-                    await websocket.send_json({
-                        "interrupt": {
-                            "question": prompt,
-                            "llm_output": llm_output,
-                            "binary_score": binary_score
-                        }
-                    })
-                    return  # Stop processing until frontend responds
-                    
-            except Exception as e:
-                logger.error(f"Error handling interrupt: {e}")
+                return  # Stop processing until frontend sends a response
 
         await websocket.send_json({"end": True})  # Completion
 
     except Exception as e:
-        logger.error(f"Error in process_graph_stream: {e}")
         await websocket.send_json({"error": str(e)})
 
 
@@ -118,7 +85,6 @@ async def process_graph_stream(query: str, websocket: WebSocket, client_id: str)
 async def websocket_endpoint(websocket: WebSocket):
     client_id = new_uuid()  # Assign a unique client ID
     await websocket.accept()
-    logger.info("connection open")
     
     try:
         while True:

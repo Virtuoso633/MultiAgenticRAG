@@ -320,7 +320,6 @@ async def check_hallucinations(
     try:
         response = cast(GradeHallucinations, await model.with_structured_output(GradeHallucinations).ainvoke(messages))
         logger.info(f"Hallucination check response: {response}")
-        return {"hallucination": response}
     except Exception as e:
         logger.error(f"Error parsing hallucination check response: {e}")
         # response = None # Explicitly set to None on error
@@ -328,63 +327,24 @@ async def check_hallucinations(
         return {"hallucination": fallback_response}  # Return the fallback
 
 
-async def human_approval(
-    state: AgentState, *, config: RunnableConfig
-) -> dict[str, str]:
-    """Determines whether to retry generation based on hallucination detection."""
-    logging.info("---HUMAN APPROVAL NODE---")
-    logging.info(f"State Hallucination: {state.hallucination}")
-    
-    # When binary score is 1 (not a hallucination), proceed to END
-    if state.hallucination and state.hallucination.binary_score == "1":
-        return {"human_approval": "END"}
-    
-    # For hallucinations or failures, create an interrupt
-    llm_output = state.messages[-1].content if state.messages and len(state.messages) > 0 else 'No generation to show.'
-    message = "Possible hallucination detected"
-    question = "Do you want to retry the generation? (y/n)"
-    
-    # Rather than raising an interrupt exception, store the data in the state
-    state.interrupts = {
-        "message": message,
-        "llm_output": llm_output,
-        "question": question
-    }
-    
-    try:
-        # This will be caught by the process_graph_stream function
-        result = await interrupt({
-            "message": message,
-            "llm_output": llm_output,
-            "question": question
-        })
-        
-        if isinstance(result, str) and result.lower() == "y":
-            return {"human_approval": "respond"}
-        return {"human_approval": "END"}
-    except Exception as e:
-        logging.error(f"Interrupt failed: {e}")
-        return {"human_approval": "END"}
-    
+    return {"hallucination": response} 
 
 
-# def human_approval(state: AgentState) -> bool:
-#     logging.info("---HUMAN APPROVAL NODE---") # Make sure this logging is present
-#     logging.info(f"State Hallucination: {state.hallucination}") # And this logging
-#     if state.hallucination is None:
-#         logger.error("Hallucination state is None!")
-#         print(f"\nLLM Output: {state.messages[-1].content if state.messages else 'No generation to show.'}")
-#         response = input("The response might not be accurate. Do you want to retry the generation? (y/n): ").strip().lower()
-#         return response.lower() == 'y'  # Return True to *retry* if hallucination check failed
+def human_approval(state: AgentState) -> bool:
+    logging.info("---HUMAN APPROVAL NODE---") # Make sure this logging is present
+    logging.info(f"State Hallucination: {state.hallucination}") # And this logging
+    if state.hallucination is None:
+        logger.error("Hallucination state is None!")
+        print(f"\nLLM Output: {state.messages[-1].content if state.messages else 'No generation to show.'}")
+        response = input("The response might not be accurate. Do you want to retry the generation? (y/n): ").strip().lower()
+        return response.lower() == 'y'  # Return True to *retry* if hallucination check failed
 
-#     if state.hallucination.binary_score == "1":
-#         return False  # Return False.  Do *NOT* interrupt.  Proceed to END.
-#     else:
-#         print(f"\nLLM Output: {state.messages[-1].content if state.messages else 'No generation to show.'}")
-#         response = input("The response might not be accurate. Do you want to retry the generation? (y/n): ").strip().lower()
-#         return response.lower() == 'y'  # Return True to *retry* if hallucination detected
-
-
+    if state.hallucination.binary_score == "1":
+        return False  # Return False.  Do *NOT* interrupt.  Proceed to END.
+    else:
+        print(f"\nLLM Output: {state.messages[-1].content if state.messages else 'No generation to show.'}")
+        response = input("The response might not be accurate. Do you want to retry the generation? (y/n): ").strip().lower()
+        return response.lower() == 'y'  # Return True to *retry* if hallucination detected
 
 # async def respond(
 #     state: AgentState, *, config: RunnableConfig
@@ -528,43 +488,8 @@ async def respond(
 
 checkpointer = MemorySaver()
 
-# builder = StateGraph(AgentState, input=InputState)
-# builder.add_node("analyze_and_route_query", analyze_and_route_query)  # Use string names for nodes
-# builder.add_edge(START, "analyze_and_route_query")
-# builder.add_conditional_edges("analyze_and_route_query", route_query)
-# builder.add_node("create_research_plan", create_research_plan)
-# builder.add_node("ask_for_more_info", ask_for_more_info)
-# builder.add_node("respond_to_general_query", respond_to_general_query)
-# builder.add_node("conduct_research", conduct_research)
-# builder.add_node("respond", respond)
-# builder.add_node("check_hallucinations", check_hallucinations)
-
-# # # Change this line:
-# # builder.add_conditional_edges("check_hallucinations", human_approval, {True: "respond", False: END})
-
-# # To this:
-# builder.add_node("human_approval", human_approval)
-# builder.add_edge("check_hallucinations", "human_approval")
-# builder.add_conditional_edges(
-#     "human_approval",
-#     lambda state: state.get("human_approval", "END"),
-#     {
-#         "respond": "respond", 
-#         "END": END
-#     }
-# )
-
-# builder.add_edge("create_research_plan", "conduct_research")
-# builder.add_conditional_edges("conduct_research", check_finished)
-
-# builder.add_edge("respond", "check_hallucinations")
-
-# graph = builder.compile(checkpointer=checkpointer)
-
-
-
 builder = StateGraph(AgentState, input=InputState)
-builder.add_node("analyze_and_route_query", analyze_and_route_query)
+builder.add_node("analyze_and_route_query", analyze_and_route_query)  # Use string names for nodes
 builder.add_edge(START, "analyze_and_route_query")
 builder.add_conditional_edges("analyze_and_route_query", route_query)
 builder.add_node("create_research_plan", create_research_plan)
@@ -573,21 +498,15 @@ builder.add_node("respond_to_general_query", respond_to_general_query)
 builder.add_node("conduct_research", conduct_research)
 builder.add_node("respond", respond)
 builder.add_node("check_hallucinations", check_hallucinations)
-builder.add_node("human_approval_node", human_approval)
 
-# Connect the nodes correctly
-builder.add_edge("check_hallucinations", "human_approval_node")
-builder.add_conditional_edges(
-    "human_approval_node",
-    lambda state: state.human_approval if hasattr(state, "human_approval") else "END",
-    {
-        "respond": "respond", 
-        "END": END
-    }
-)
+builder.add_conditional_edges("check_hallucinations", human_approval, {True: "respond", False: END})
 
 builder.add_edge("create_research_plan", "conduct_research")
 builder.add_conditional_edges("conduct_research", check_finished)
+
 builder.add_edge("respond", "check_hallucinations")
 
 graph = builder.compile(checkpointer=checkpointer)
+
+
+
