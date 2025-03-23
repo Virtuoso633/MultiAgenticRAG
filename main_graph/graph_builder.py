@@ -330,21 +330,53 @@ async def check_hallucinations(
     return {"hallucination": response} 
 
 
-def human_approval(state: AgentState) -> bool:
-    logging.info("---HUMAN APPROVAL NODE---") # Make sure this logging is present
-    logging.info(f"State Hallucination: {state.hallucination}") # And this logging
-    if state.hallucination is None:
-        logger.error("Hallucination state is None!")
-        print(f"\nLLM Output: {state.messages[-1].content if state.messages else 'No generation to show.'}")
-        response = input("The response might not be accurate. Do you want to retry the generation? (y/n): ").strip().lower()
-        return response.lower() == 'y'  # Return True to *retry* if hallucination check failed
-
-    if state.hallucination.binary_score == "1":
-        return False  # Return False.  Do *NOT* interrupt.  Proceed to END.
+def human_approval(state: AgentState) -> dict:
+    logging.info("---HUMAN APPROVAL NODE---")
+    logging.info(f"State Hallucination: {state.hallucination}")
+    
+    # Create interrupts data regardless of hallucination state
+    llm_output = state.messages[-1].content if state.messages else "No generation to show."
+    
+    # Set up the interrupts with proper data
+    state.interrupts = {
+        "message": "Potential issue detected",
+        "llm_output": llm_output,
+        "question": "Do you want to retry the generation?"
+    }
+    
+    # Add binary score if available, otherwise use default
+    if state.hallucination is not None:
+        state.interrupts["binary_score"] = state.hallucination.binary_score
     else:
-        print(f"\nLLM Output: {state.messages[-1].content if state.messages else 'No generation to show.'}")
-        response = input("The response might not be accurate. Do you want to retry the generation? (y/n): ").strip().lower()
-        return response.lower() == 'y'  # Return True to *retry* if hallucination detected
+        logging.warning("Hallucination state is None, using default score")
+        state.interrupts["binary_score"] = "0"  # Default score
+    
+    # Use interrupt() to pause execution and wait for frontend response
+    # return interrupt()
+
+    # Create the message to show to the user
+    message = "Do you want to retry the generation?"
+    
+    # Use interrupt() with a value parameter
+    return interrupt(message)
+
+
+
+# def human_approval(state: AgentState) -> bool:
+#     logging.info("---HUMAN APPROVAL NODE---") # Make sure this logging is present
+#     logging.info(f"State Hallucination: {state.hallucination}") # And this logging
+#     if state.hallucination is None:
+#         logger.error("Hallucination state is None!")
+#         print(f"\nLLM Output: {state.messages[-1].content if state.messages else 'No generation to show.'}")
+#         response = input("The response might not be accurate. Do you want to retry the generation? (y/n): ").strip().lower()
+#         return response.lower() == 'y'  # Return True to *retry* if hallucination check failed
+
+#     if state.hallucination.binary_score == "1":
+#         return False  # Return False.  Do *NOT* interrupt.  Proceed to END.
+#     else:
+#         print(f"\nLLM Output: {state.messages[-1].content if state.messages else 'No generation to show.'}")
+#         response = input("The response might not be accurate. Do you want to retry the generation? (y/n): ").strip().lower()
+#         return response.lower() == 'y'  # Return True to *retry* if hallucination detected
 
 # async def respond(
 #     state: AgentState, *, config: RunnableConfig

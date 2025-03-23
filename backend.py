@@ -30,11 +30,80 @@ app.add_middleware(
 # Store pending interruptions per client
 pending_interruptions = {}
 
+# async def process_graph_stream(query: str, websocket: WebSocket, client_id: str):
+#     """Processes a query using the LangGraph and streams results."""
+    
+#     input_state = InputState(messages=[query])
+#     thread_id = new_uuid()
+#     config = {"configurable": {"thread_id": thread_id}}
 
-async def process_graph_stream(query: str, websocket: WebSocket, client_id: str) -> AsyncGenerator:
+#     try:
+#         async for chunk, _ in graph.astream(input_state, stream_mode="messages", config=config):
+            
+#             if chunk.additional_kwargs.get("tool_calls"):
+#                 tool_calls = chunk.additional_kwargs.get("tool_calls")[0]["function"].get("arguments")
+#                 await websocket.send_json({"tool_calls": tool_calls})
+
+#             if hasattr(chunk, 'queries') and chunk.queries:
+#                 await websocket.send_json({"queries": chunk.queries})
+
+#             if chunk.content:
+#                 await websocket.send_json({"content": chunk.content})
+
+#             await asyncio.sleep(0.05)
+
+
+#             # Handle interruptions by delegating approval to the frontend
+#             if hasattr(chunk, 'interrupts') and chunk.interrupts:
+#                 prompt = chunk.interrupts["question"]
+#                 llm_output = chunk.interrupts["llm_output"]
+#                 binary_score = chunk.hallucination.binary_score if chunk.hallucination else "N/A"
+                
+#                 # Create a Future for the human response and store it using the client_id
+#                 resume_future = asyncio.Future()
+#                 pending_interruptions[client_id] = resume_future
+
+#                 # Send the interrupt data to the frontend UI
+#                 await websocket.send_json({
+#                     "interrupt": {
+#                         "question": prompt,
+#                         "llm_output": llm_output,
+#                         "binary_score": binary_score
+#                     }
+#                 })
+
+#                 # Wait for the frontend's resume decision (it will send "y" or "n")
+#                 resume_decision = await resume_future
+#                 del pending_interruptions[client_id]
+
+#                 if resume_decision.lower() == "y":
+#                     # Resume processing using the resume command
+#                     async for resumed_chunk, _ in graph.astream(Command(resume="y"), stream_mode="messages", config=config):
+#                         if resumed_chunk.additional_kwargs.get("tool_calls"):
+#                             tool_calls_resumed = resumed_chunk.additional_kwargs.get("tool_calls")[0]["function"].get("arguments")
+#                             await websocket.send_json({"tool_calls": tool_calls_resumed})
+#                         if hasattr(resumed_chunk, 'queries') and resumed_chunk.queries:
+#                             await websocket.send_json({"queries": resumed_chunk.queries})
+#                         if resumed_chunk.content:
+#                             await websocket.send_json({"content": resumed_chunk.content})
+#                         await asyncio.sleep(0.05)
+#                 else:
+#                     # If the frontend indicates to halt, signal the end to the UI
+#                     await websocket.send_json({"end": True})
+                
+#                 # Stop processing after handling the interruption
+#                 return
+
+#         await websocket.send_json({"end": True})  # Completion
+
+#     except Exception as e:
+#         await websocket.send_json({"error": str(e)})
+
+
+async def process_graph_stream(query: str, websocket: WebSocket, client_id: str):
     """Processes a query using the LangGraph and streams results."""
     
-    input_state = InputState(messages=[query])  # Create InputState directly
+    input_state = InputState(messages=[query])
     thread_id = new_uuid()
     config = {"configurable": {"thread_id": thread_id}}
 
@@ -45,7 +114,7 @@ async def process_graph_stream(query: str, websocket: WebSocket, client_id: str)
                 tool_calls = chunk.additional_kwargs.get("tool_calls")[0]["function"].get("arguments")
                 await websocket.send_json({"tool_calls": tool_calls})
 
-            if hasattr(chunk, 'queries') and chunk.queries:  # Handle queries
+            if hasattr(chunk, 'queries') and chunk.queries:
                 await websocket.send_json({"queries": chunk.queries})
 
             if chunk.content:
@@ -53,27 +122,59 @@ async def process_graph_stream(query: str, websocket: WebSocket, client_id: str)
 
             await asyncio.sleep(0.05)
 
-            # Handle interruptions
+
+            # Handle interruptions by delegating approval to the frontend
             if hasattr(chunk, 'interrupts') and chunk.interrupts:
                 prompt = chunk.interrupts["question"]
                 llm_output = chunk.interrupts["llm_output"]
-                binary_score = chunk.hallucination.binary_score if chunk.hallucination else "N/A"  # Safe access
+                binary_score = chunk.hallucination.binary_score if chunk.hallucination else "N/A"
 
-                # Store interruption state
-                pending_interruptions[client_id] = {
-                    "thread_id": thread_id,
-                    "config": config
-                }
-
-                await websocket.send_json({
-                    "interrupt": {
+                # Create a Future that will be resolved when the frontend sends a "resume" message
+                resume_future = asyncio.Future()
+                pending_interruptions[client_id] = resume_future
+                
+                print("Sending interrupt message:", {
+                    "type": "interrupt",
+                    "data": {
                         "question": prompt,
                         "llm_output": llm_output,
                         "binary_score": binary_score
                     }
                 })
 
-                return  # Stop processing until frontend sends a response
+                # Send the interruption details to the frontend UI
+                await websocket.send_json({
+                    "type": "interrupt",
+                    "data": {
+                        "question": prompt,
+                        "llm_output": llm_output,
+                        "binary_score": binary_score
+                    }
+                })
+
+
+                # Wait for the frontend to send a "resume" response (e.g., "y" or "n")
+                resume_decision = await resume_future
+                del pending_interruptions[client_id]
+
+                if resume_decision.lower() == "y":
+                    # Resume processing if approved by the human
+                    async for resumed_chunk, _ in graph.astream(Command(resume="y"), stream_mode="messages", config=config):
+                        if resumed_chunk.additional_kwargs.get("tool_calls"):
+                            tool_calls_resumed = resumed_chunk.additional_kwargs.get("tool_calls")[0]["function"].get("arguments")
+                            await websocket.send_json({"tool_calls": tool_calls_resumed})
+                        if hasattr(resumed_chunk, 'queries') and resumed_chunk.queries:
+                            await websocket.send_json({"queries": resumed_chunk.queries})
+                        if resumed_chunk.content:
+                            await websocket.send_json({"content": resumed_chunk.content})
+                        await asyncio.sleep(0.05)
+                else:
+                    # Signal the end if not approved
+                    await websocket.send_json({"end": True})
+                
+                # Stop further processing for this chunk
+                return
+
 
         await websocket.send_json({"end": True})  # Completion
 
@@ -81,9 +182,58 @@ async def process_graph_stream(query: str, websocket: WebSocket, client_id: str)
         await websocket.send_json({"error": str(e)})
 
 
+
+# @app.websocket("/ws")
+# async def websocket_endpoint(websocket: WebSocket):
+#     client_id = new_uuid()
+#     await websocket.accept()
+    
+#     try:
+#         while True:
+#             data = await websocket.receive_json()
+            
+#             if isinstance(data, dict) and "query" in data:
+#                 asyncio.create_task(process_graph_stream(data["query"], websocket, client_id))
+
+#             # Handle interrupt response with proper type field
+#             elif isinstance(data, dict) and "type" in data and data["type"] == "interrupt_response":
+#                 if client_id in pending_interruptions:
+#                     thread_id = pending_interruptions[client_id]["thread_id"]
+#                     config = pending_interruptions[client_id]["config"]
+                    
+#                     del pending_interruptions[client_id]  # Remove pending state
+
+#                     if data["response"].lower() == "y":
+#                         async for resumed_chunk, _ in graph.astream(Command(resume="y"), stream_mode="messages", config=config):
+#                             # Process resumed chunk
+#                             if resumed_chunk.additional_kwargs.get("tool_calls"):
+#                                 tool_calls_resumed = resumed_chunk.additional_kwargs.get("tool_calls")[0]["function"].get("arguments")
+#                                 await websocket.send_json({"tool_calls": tool_calls_resumed})
+
+#                             if hasattr(resumed_chunk, 'queries') and resumed_chunk.queries:
+#                                 await websocket.send_json({"queries": resumed_chunk.queries})
+
+#                             if resumed_chunk.content:
+#                                 await websocket.send_json({"content": resumed_chunk.content})
+
+#                             await asyncio.sleep(0.05)
+#                     else:
+#                         await websocket.send_json({"end": True})
+
+#     except WebSocketDisconnect:
+#         print("Client disconnected")
+        
+#         if client_id in pending_interruptions:
+#             del pending_interruptions[client_id]
+    
+#     except Exception as e:
+#         print(f"Error: {e}")
+
+
+
 @app.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket):
-    client_id = new_uuid()  # Assign a unique client ID
+    client_id = new_uuid()
     await websocket.accept()
     
     try:
@@ -93,31 +243,12 @@ async def websocket_endpoint(websocket: WebSocket):
             if isinstance(data, dict) and "query" in data:
                 asyncio.create_task(process_graph_stream(data["query"], websocket, client_id))
 
-            elif isinstance(data, dict) and "resume" in data:  # Handle frontend's "y/n" response
+            # Handle interrupt response with proper type field
+            elif isinstance(data, dict) and "resume" in data:
                 if client_id in pending_interruptions:
-                    thread_id = pending_interruptions[client_id]["thread_id"]
-                    config = pending_interruptions[client_id]["config"]
-                    
-                    del pending_interruptions[client_id]  # Remove pending state
-
-                    if data["resume"].lower() == "y":
-                        async for resumed_chunk, _ in graph.astream(Command(resume="y"), stream_mode="messages", config=config):
-                            
-                            if resumed_chunk.additional_kwargs.get("tool_calls"):
-                                tool_calls_resumed = resumed_chunk.additional_kwargs.get("tool_calls")[0]["function"].get("arguments")
-                                await websocket.send_json({"tool_calls": tool_calls_resumed})
-
-                            if hasattr(resumed_chunk, 'queries') and resumed_chunk.queries:
-                                await websocket.send_json({"queries": resumed_chunk.queries})
-
-                            if resumed_chunk.content:
-                                await websocket.send_json({"content": resumed_chunk.content})
-
-                            await asyncio.sleep(0.05)
-
-                    else:
-                        await websocket.send_json({"end": True})  # Signal end
-                        return  # Exit
+                    resume_future = pending_interruptions[client_id]
+                    if not resume_future.done():
+                        resume_future.set_result(data["resume"])
 
     except WebSocketDisconnect:
         print("Client disconnected")
@@ -129,6 +260,7 @@ async def websocket_endpoint(websocket: WebSocket):
         print(f"Error: {e}")
 
 
+
 @app.get("/")
 async def read_root():
     return {"message": "MultiAgentic RAG Backend is running!"}
@@ -137,3 +269,4 @@ async def read_root():
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(app, host="0.0.0.0", port=8000)
+

@@ -264,3 +264,16 @@ th {
 .dark-mode td {
     background-color: #222;
 }
+
+
+.interrupt-popup {
+    position: fixed;
+    top: 20%;
+    left: 50%;
+    transform: translate(-50%, -20%);
+    background-color: #fff;
+    border: 2px solid #ccc;
+    padding: 20px;
+    z-index: 1000;
+    box-shadow: 0 4px 8px rgba(0,0,0,0.2);
+}

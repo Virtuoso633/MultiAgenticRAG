@@ -17,13 +17,15 @@ function App() {
 
   useEffect(() => {
     websocket.current = new WebSocket('ws://localhost:8000/ws');
+    window.myWebSocket = websocket.current;  // For debugging
+    console.log("WebSocket assigned:", window.myWebSocket);
 
     websocket.current.onopen = () => console.log('Connected to WebSocket');
     
     websocket.current.onmessage = (event) => {
       const data = JSON.parse(event.data);
       console.log("Received:", data);
-
+    
       if (data.error) {
         setMessages(prev => [...prev, { type: 'error', text: data.error }]);
         setIsTyping(false);
@@ -40,19 +42,21 @@ function App() {
           }
         });
       } 
-      else if (data.interrupt) {
-        setInterruptData(data.interrupt);
+      else if (data.type === "interrupt") {
+        console.log("Interrupt received in frontend:", data);
+        setInterruptData(data.data);
         setMessages(prev => [
           ...prev,
-          { type: 'llm_output', text: data.interrupt.llm_output },
-          { type: 'interrupt', text: data.interrupt.question, binaryScore: data.interrupt.binary_score }
+          { type: 'llm_output', text: data.data.llm_output || "Potential issue detected" },
+          { type: 'interrupt', text: data.data.question, binaryScore: data.data.binary_score }
         ]);
-      } 
+      }
       else if (data.end) {
         setIsTyping(false);
         currentResponse.current = "";
       }
     };
+    
 
     websocket.current.onclose = () => console.log('Disconnected from WebSocket');
     websocket.current.onerror = (error) => console.error('WebSocket error:', error);
@@ -73,14 +77,17 @@ function App() {
     setQuery('');
   };
 
+  
   const handleInterruptResponse = (response) => {
     if (websocket.current) {
       setIsTyping(true);
+      // Send the response using the "resume" key so that backend can pick it up
       websocket.current.send(JSON.stringify({ resume: response }));
       setMessages(prev => prev.filter(msg => msg.type !== 'interrupt' && msg.type !== 'llm_output'));
       setInterruptData(null);
     }
   };
+  
 
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
@@ -120,14 +127,22 @@ function App() {
         </div>
 
         {interruptData && (
-          <div className="interrupt-popup">
-            <p>{interruptData.question}</p>
-            <p>LLM Output: {interruptData.llm_output}</p>
-            <p>Binary Score: {interruptData.binary_score}</p>
+          <div style={{
+              position: 'fixed',
+              top: '20%',
+              left: '50%',
+              transform: 'translate(-50%, -20%)',
+              backgroundColor: '#fff',
+              border: '2px solid #ccc',
+              padding: '20px',
+              zIndex: 1000
+          }}>
+            <pre>{JSON.stringify(interruptData, null, 2)}</pre>
             <button onClick={() => handleInterruptResponse("y")}>Continue (y)</button>
             <button onClick={() => handleInterruptResponse("n")}>Stop (n)</button>
           </div>
         )}
+
 
         <form onSubmit={handleSubmit}>
           <input type="text" value={query} onChange={(e) => setQuery(e.target.value)} placeholder="Enter your query..." disabled={isTyping} />
