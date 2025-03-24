@@ -96,7 +96,7 @@ function App() {
   return (
     <div className={`App ${isDarkMode ? "dark-mode" : ""}`}>
       <header className="app-header">
-        <h1>MultiAgentic RAG Chat</h1>
+        <h1>RAGHive</h1>
         <button className="dark-toggle" onClick={() => setIsDarkMode(prev => !prev)} title="Toggle dark mode">
           {isDarkMode ? "☀️" : "🌙"}
         </button>
