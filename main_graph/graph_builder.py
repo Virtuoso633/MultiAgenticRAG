@@ -34,10 +34,9 @@ from main_graph.graph_states import (AgentState, GradeHallucinations,
                                     InputState, Router)
 from utils.prompt import (CHECK_HALLUCINATIONS, GENERAL_SYSTEM_PROMPT,
                         MORE_INFO_SYSTEM_PROMPT, RESEARCH_PLAN_SYSTEM_PROMPT,
-                        RESPONSE_SYSTEM_PROMPT, ROUTER_SYSTEM_PROMPT)
+                        RESPONSE_SYSTEM_PROMPT, ROUTER_SYSTEM_PROMPT, EXTRACT_SUMMARY_PROMPT)
 
-
-
+from utils.summarizer import summarize_documents # Ensure this is imported
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
@@ -298,67 +297,83 @@ async def check_hallucinations(
     Returns:
         dict[str, Router]: A dictionary containing the 'router' key with the classification result (classification type and logic).
     """
-    model = ChatGroq(groq_api_key=os.environ["GROQ_API_KEY"], model_name=GROQ_MODEL, max_tokens=2000, streaming=True)
-    
-    # Use the summarizer to reduce the document text.
-    summarized_docs = summarize_documents(state.documents) if state.documents else "No documents"
-    
+    model = ChatGroq(groq_api_key=os.environ["GROQ_API_KEY"], model_name=GROQ_MODEL, max_tokens=2000, streaming=False) # Use streaming=False for structured output
+
+    # Use the summarizer to reduce the document text
+    summarized_docs_content = format_docs(summarize_documents(state.documents)) if state.documents else "No documents provided." # Use format_docs
+
+    # *** Use state.detailed_answer as the generation to check ***
+    generation_to_check = state.detailed_answer if state.detailed_answer else "No generation available."
+
+    # Create a more explicit prompt
     system_prompt = CHECK_HALLUCINATIONS.format(
-        documents=summarized_docs,  # Use summarized_docs
-        generation=state.messages[-1].content if state.messages else "No generation" #Get the content from messages.
+        documents=summarized_docs_content, # Pass formatted summarized docs
+        generation=generation_to_check # Pass the detailed answer
     )
-    
+
     messages = [
         {"role": "system", "content": system_prompt}
-    ] + state.messages
-    logging.info("---CHECK HALLUCINATIONS---")
+    ]
     
-    # Get the raw response as a string
-    raw_response = await model.ainvoke(messages)
-    logger.info(f"Raw LLM response for hallucination check: {raw_response}")
+    logging.info("---CHECK HALLUCINATIONS---")
+    logging.info(f"Documents for hallucination check: {summarized_docs_content[:500]}...") # Log snippet
+    logging.info(f"Generation for hallucination check: {generation_to_check}")
 
     try:
+        # Use structured output to ensure we get a valid binary score
         response = cast(GradeHallucinations, await model.with_structured_output(GradeHallucinations).ainvoke(messages))
+
+        # Make sure binary_score is either "1" or "0"
+        if response.binary_score not in ["0", "1"]:
+            logger.warning(f"Invalid binary score received: {response.binary_score}. Defaulting to '0'.")
+            response.binary_score = "0" # Default to not grounded if invalid
+
         logger.info(f"Hallucination check response: {response}")
+        return {"hallucination": response}
+
     except Exception as e:
-        logger.error(f"Error parsing hallucination check response: {e}")
-        # response = None # Explicitly set to None on error
-        fallback_response = GradeHallucinations(binary_score="0")  # Create fallback object LOCALLY
-        return {"hallucination": fallback_response}  # Return the fallback
+        logger.error(f"Error in hallucination check: {e}")
+        # Create a fallback response with binary_score="0"
+        fallback_response = GradeHallucinations(binary_score="0")
+        return {"hallucination": fallback_response}
 
 
-    return {"hallucination": response} 
+def human_approval(state: AgentState) -> str | None: # Or use -> Any
+    """
+    Pauses the graph to wait for human approval if hallucination score is low.
+    Sends interrupt data to the frontend via the backend.
+    """
+    logger.info("---HUMAN APPROVAL NODE---")
+    logger.info(f"State Hallucination Score: {state.hallucination.binary_score if state.hallucination else 'N/A'}")
 
+    # Proceed directly to formatting if the score is '1' (grounded)
+    if state.hallucination and state.hallucination.binary_score == "1":
+        logger.info("Response is grounded. Proceeding to final formatting.")
+        # Return the key for the next node directly
+        return "format_final_response" # Key for the edge leading to format_final_response
 
-def human_approval(state: AgentState) -> dict:
-    logging.info("---HUMAN APPROVAL NODE---")
-    logging.info(f"State Hallucination: {state.hallucination}")
-    
-    # Create interrupts data regardless of hallucination state
-    llm_output = state.messages[-1].content if state.messages else "No generation to show."
-    
-    # Set up the interrupts with proper data
-    state.interrupts = {
-        "message": "Potential issue detected",
-        "llm_output": llm_output,
-        "question": "Do you want to retry the generation?"
+    # If score is '0' or hallucination state is missing, interrupt for human review
+    logger.info("Response potentially not grounded or check failed. Interrupting for human approval.")
+
+    # *** Use state.detailed_answer for the output shown to the user ***
+    llm_output_to_review = state.detailed_answer if state.detailed_answer else "No detailed answer generated."
+
+    # Prepare data for the interrupt message to the frontend
+    interrupt_data = {
+        "message": "Potential issue detected in the generated answer.",
+        "llm_output": llm_output_to_review,
+        "question": "The generated answer might not be fully accurate based on the documents. Do you want to proceed anyway, or stop?",
+        "binary_score": state.hallucination.binary_score if state.hallucination else "0"
     }
-    
-    # Add binary score if available, otherwise use default
-    if state.hallucination is not None:
-        state.interrupts["binary_score"] = state.hallucination.binary_score
-    else:
-        logging.warning("Hallucination state is None, using default score")
-        state.interrupts["binary_score"] = "0"  # Default score
-    
-    # Use interrupt() to pause execution and wait for frontend response
-    # return interrupt()
 
-    # Create the message to show to the user
-    message = "Do you want to retry the generation?"
-    
-    # Use interrupt() with a value parameter
-    return interrupt(message)
+    # Store interrupt data in state (optional, but can be useful for debugging)
+    state.interrupts = interrupt_data
+
+    # Use interrupt() to pause execution.
+    # interrupt() doesn't return a value to the graph logic itself.
+    interrupt(None)
+    # Return None or omit return for the interrupt path if type hint is str | None
+    return None # Explicitly return None for the interrupt path
 
 
 
@@ -453,19 +468,32 @@ def human_approval(state: AgentState) -> dict:
 #     return {"messages": [type(response)(content=cleaned_response_content, additional_kwargs=response.additional_kwargs)]}
 
 def _extract_answer(text: str) -> str:
-    """Extracts the answer and citations using regex, handling edge cases."""
-    # Remove any text before the first citation or apology
-    text = re.sub(r'^.*?(\[\d+\]|I am sorry, but I cannot answer that question)', r'\1', text, flags=re.DOTALL)
-    # Remove any trailing text after the last citation
-    text = re.sub(r'(\[\d+\])[^[]*$', r'\1', text, flags=re.DOTALL)
-    text = text.strip()
+    """Extracts the answer and citations, aggressively removing preamble."""
+    # Remove common preamble patterns (case-insensitive, multiline)
+    preamble_patterns = [
+        r'^\s*Based on the provided query and documents.*?\n',
+        r'^\s*Based on the provided documents.*?\n',
+        r'^\s*Here is the answer to the question:?\s*\n',
+        r'^\s*Ranking:?\s*\n(.*?Document \d+:.*?\n)*', # Remove ranking sections
+        r'^\s*Summary: Based on the provided query.*?\n',
+        r'^\s*Unfortunately, based on the provided search results.*?\n',
+        r'^\s*Based on the search results.*?\n',
+    ]
+    cleaned_text = text.strip()
+    for pattern in preamble_patterns:
+        cleaned_text = re.sub(pattern, '', cleaned_text, flags=re.IGNORECASE | re.MULTILINE).strip()
 
-    # Check if the result is just the apology message, return it directly
-    if text.startswith("I am sorry, but I cannot answer that question"):
-        return text
+    # Check if only an apology remains after cleaning preamble
+    if re.match(r'^(I am sorry|Unfortunately|No relevant document).*?(not available|cannot answer|not provided|not contain|not mention)', cleaned_text, re.IGNORECASE):
+         # Try to find the core reason if possible
+         core_reason_match = re.search(r'(PUE.*?not available|CFE.*?not available|information.*?not provided)', cleaned_text, re.IGNORECASE)
+         if core_reason_match:
+              return core_reason_match.group(0).strip() + "." # Return just the core reason
+         else:
+              return "I am sorry, but I cannot answer that question based on the provided documents." # Generic fallback
 
     # Find citations
-    citations = re.findall(r'\[(\d+)\]', text)
+    citations = re.findall(r'\[(\d+)\]', cleaned_text)
     # Remove citation text, preserving order and removing duplicates
     seen_citations = set()
     unique_citations = []
@@ -473,72 +501,368 @@ def _extract_answer(text: str) -> str:
         if citation not in seen_citations:
             seen_citations.add(citation)
             unique_citations.append(citation)
-    citation_string = "".join(f"[{c}]" for c in unique_citations)  # Reconstruct citation string
+    citation_string = "".join(f"[{c}]" for c in unique_citations)
 
-    # Extract the answer text, removing citation markers
-    answer_text = re.sub(r'\[\d+\]', '', text).strip()
+    # Extract the answer text, removing citation markers and extra whitespace
+    answer_text = re.sub(r'\s*\[\d+\]\s*', ' ', cleaned_text).strip()
+    answer_text = re.sub(r'\s{2,}', ' ', answer_text) # Consolidate whitespace
 
-    # If there's an answer, combine it with the citations
+    # Remove trailing standalone citation blocks if _extract_answer missed them initially
+    answer_text = re.sub(r'\s*\[No citations available.*?\]\s*$', '', answer_text).strip()
+
+
     if answer_text:
-        return f"{answer_text} {citation_string}".strip()
+        # Re-append unique citations if they existed
+        return f"{answer_text}{' ' + citation_string if citation_string else ''}".strip()
+
+    # If after all cleaning, no answer text remains, return apology
     return "I am sorry, but I cannot answer that question based on the provided documents."
 
 
+async def extract_summary_from_answer(state: AgentState, *, config: RunnableConfig) -> dict[str, str]:
+    """
+    Extracts a concise summary from the generated detailed answer text.
+    """
+    logger.info("--- EXTRACTING SUMMARY FROM DETAILED ANSWER ---")
+    # Use a capable model, maybe slightly cheaper/faster if appropriate for extraction
+    model = ChatGroq(groq_api_key=os.environ["GROQ_API_KEY"], model_name=GROQ_MODEL, max_tokens=500, streaming=False)
+
+    user_query = ""
+    if state.messages:
+        for msg in reversed(state.messages):
+            if msg.type == "human":
+                user_query = msg.content
+                break
+
+    detailed_answer_text = state.detailed_answer
+    if not detailed_answer_text or detailed_answer_text.startswith("Could not generate") or detailed_answer_text.startswith("I am sorry"):
+        logger.warning("Detailed answer is missing or is an error message. Skipping summary extraction.")
+        return {"summary": ""} # Return empty summary if detailed answer failed
+
+    logger.info(f"Detailed answer to summarize: {detailed_answer_text[:500]}...")
+    logger.info(f"Original query for summary context: {user_query}")
+
+    prompt = EXTRACT_SUMMARY_PROMPT.format(query=user_query, detailed_answer=detailed_answer_text)
+    messages = [{"role": "system", "content": prompt}]
+
+    logger.info(f"Prompt for summary extraction: {prompt}")
+
+    try:
+        response = await model.ainvoke(messages)
+        summary_text = response.content.strip()
+        logger.info(f"RAW extracted summary response from LLM: {summary_text}")
+
+        # More robust cleaning
+        # 1. Remove potential LLM preamble like "Here is the summary:"
+        summary_text = re.sub(r'^(SUMMARY:|Summary:|Here is the summary:)\s*', '', summary_text, flags=re.IGNORECASE).strip()
+
+        # 2. Check if it *already* starts correctly (case-insensitive)
+        required_prefix = "Based on the Google Environmental Report 2024,"
+        if not summary_text.lower().startswith(required_prefix.lower()):
+             logger.warning("Extracted summary didn't start as expected. Prepending required phrase.")
+             summary_text = f"{required_prefix} {summary_text}"
+        else:
+             # Ensure the capitalization is correct if it already started correctly
+             summary_text = required_prefix + summary_text[len(required_prefix):]
+
+        logger.info(f"Cleaned extracted summary: {summary_text}")
+        return {"summary": summary_text}
+
+    except Exception as e:
+        logger.error(f"Error extracting summary from detailed answer: {e}")
+        return {"summary": "Could not extract summary due to an error."}
+
+
+def format_docs(docs: list[Document]) -> str:
+    """Convert Documents to a single string."""
+    formatted = []
+    for i, doc in enumerate(docs):
+        # Include metadata if useful, e.g., source
+        source = doc.metadata.get('source', f'Document {i+1}')
+        content = doc.page_content.replace('\n', ' ').strip()
+        formatted.append(f"Source: {source}\nContent: {content}")
+    return "\n\n".join(formatted)
+
+# Ensure summarize_documents is only used where appropriate (like detailed answer if needed)
+# def summarize_documents... (keep this function if generate_detailed_answer still uses it)
+
 #In main_graph/graph_builder.py
-async def respond(
+# async def respond(
+#     state: AgentState, *, config: RunnableConfig
+# ) -> dict[str, list[BaseMessage]]:
+#     logger.info("--- RESPONSE GENERATION STEP ---")
+#     model = ChatGroq(groq_api_key=os.environ["GROQ_API_KEY"], model_name=GROQ_MODEL, max_tokens=2000, streaming=True)
+
+#     all_docs = state.documents
+#     summarized_docs = summarize_documents(all_docs)
+#     context = format_docs(summarized_docs)
+#     logger.info(f"Context length: {len(context)}")
+
+
+#     prompt = RESPONSE_SYSTEM_PROMPT.format(context=context)
+#     messages = [SystemMessage(content=prompt)] + state.messages
+
+#     try:
+#         response = await asyncio.wait_for(model.ainvoke(messages), timeout=60.0)
+#         logger.info(f"Raw LLM response: {response.content}")
+
+#     except asyncio.TimeoutError:
+#         logger.error("Groq API call timed out!")
+#         return {"messages": [SystemMessage(content="I am sorry, but the request timed out. Please try again.")]}
+#     except Exception as e:
+#         logger.exception(f"Error during response generation: {e}")
+#         return {"messages": [SystemMessage(content=f"An unexpected error occurred: {e}")]}
+
+#     # --- Post-processing ---
+#     cleaned_response_content = _extract_answer(response.content)
+#     logger.info(f"Cleaned response: {cleaned_response_content}")
+
+#     # # Add confidence level
+#     # confidence = "high" if all_docs and len(all_docs) > 2 else "moderate"
+#     # logger.info(f"Inferred confidence level: {confidence}")
+
+#     # # Remove citation references like [1], [2]
+#     # cleaned_response_content = re.sub(r'\[\d+\]', '', cleaned_response_content)
+
+#     # # Add summary at the top if the content is long
+#     # # Improve summary extraction
+#     # if len(cleaned_response_content) > 200:
+#     #     # Get first sentence but make sure it's complete
+#     #     first_period = cleaned_response_content.find('.')
+#     #     if first_period > 0:
+#     #         summary = cleaned_response_content[:first_period + 1].strip()
+#     #     else:
+#     #         # If no period found, take first 100 chars
+#     #         summary = cleaned_response_content[:100].strip() + "..."
+            
+#     #     # Make sure the summary is meaningful
+#     #     if len(summary) < 20:  # Too short to be meaningful
+#     #         summary = cleaned_response_content[:100].strip() + "..."
+            
+#     #     final_response = f"**Key Insight:** {summary}\n\n{cleaned_response_content}"
+#     # else:
+#     #     final_response = cleaned_response_content
+
+#     # In the respond function, replace the summary generation section with:
+
+#     # --- Post-processing ---
+#     cleaned_response_content = _extract_answer(response.content)
+#     logger.info(f"Cleaned response: {cleaned_response_content}")
+
+#     # Generate a semantic summary using the improved function
+#     if len(cleaned_response_content) > 200:
+#         summary = await generate_semantic_summary(cleaned_response_content, model)
+        
+#         # Add clarity for negative results
+#         if "not" in cleaned_response_content.lower() and "not" not in summary.lower():
+#             if re.search(r'not (available|provided|mentioned|found|present)', cleaned_response_content, re.IGNORECASE):
+#                 summary = "The requested information is not available in the provided documents. " + summary
+        
+#         # If summary still contains ranking language, create a very simple extraction
+#         if re.search(r'(rank|document|relev)', summary, re.IGNORECASE):
+#             # Extract specific facts about PUE, CFE, etc.
+#             key_facts = extract_key_facts(cleaned_response_content)
+#             if key_facts:
+#                 summary = key_facts
+#             else:
+#                 # Last resort - get first sentence that's not about documents/ranking
+#                 sentences = re.split(r'(?<=[.!?])\s+', cleaned_response_content)
+#                 for sentence in sentences:
+#                     if not re.search(r'(rank|document|relev)', sentence, re.IGNORECASE):
+#                         summary = sentence
+#                         break
+        
+#         final_response = f"**Key Insight:** {summary}\n\n{cleaned_response_content}"
+#     else:
+#         final_response = cleaned_response_content
+
+#     return {
+#         "messages": [
+#             type(response)(
+#                 content=final_response,
+#                 additional_kwargs=response.additional_kwargs
+#             )
+#         ]
+#     }
+
+# RENAME this function from 'respond' to 'generate_detailed_answer'
+# async def generate_detailed_answer(
+#     state: AgentState, *, config: RunnableConfig
+# ) -> dict[str, str]: # Return type changed
+#     logger.info("--- DETAILED ANSWER GENERATION ---") # Log message updated
+#     model = ChatGroq(groq_api_key=os.environ["GROQ_API_KEY"], model_name=GROQ_MODEL, max_tokens=2000, streaming=True) # Can keep streaming if needed elsewhere
+
+#     # Context remains the same (based on summarized docs)
+#     all_docs = state.documents
+#     summarized_docs = summarize_documents(all_docs)
+#     context = format_docs(summarized_docs)
+#     logger.info(f"Context length for detailed answer: {len(context)}")
+
+#     # Use the existing RESPONSE_SYSTEM_PROMPT, assuming it's designed for detailed answers
+#     prompt = RESPONSE_SYSTEM_PROMPT.format(context=context)
+#     messages = [SystemMessage(content=prompt)] + state.messages
+
+#     try:
+#         # Use invoke for non-streaming or handle streaming differently if needed later
+#         response = await asyncio.wait_for(model.ainvoke(messages), timeout=60.0)
+#         logger.info(f"Raw LLM detailed answer: {response.content}")
+
+#         # Perform cleaning specific to the detailed answer
+#         cleaned_detailed_answer = _extract_answer(response.content) # Use existing cleaning
+#         logger.info(f"Cleaned detailed answer: {cleaned_detailed_answer}")
+
+#         # Store the cleaned detailed answer in the state
+#         return {"detailed_answer": cleaned_detailed_answer} # Store in new state field
+
+#     except asyncio.TimeoutError:
+#         logger.error("Groq API call timed out during detailed answer generation!")
+#         return {"detailed_answer": "I am sorry, but the request timed out while generating the detailed answer."}
+#     except Exception as e:
+#         logger.exception(f"Error during detailed answer generation: {e}")
+#         return {"detailed_answer": f"An unexpected error occurred while generating the detailed answer: {e}"}
+
+# ... other imports ...
+from utils.summarizer import summarize_documents # Ensure this is imported
+
+# ... other functions ...
+
+async def generate_detailed_answer(
     state: AgentState, *, config: RunnableConfig
-) -> dict[str, list[BaseMessage]]:
-    logger.info("--- RESPONSE GENERATION STEP ---")
+) -> dict[str, str]:
+    logger.info("--- DETAILED ANSWER GENERATION ---")
     model = ChatGroq(groq_api_key=os.environ["GROQ_API_KEY"], model_name=GROQ_MODEL, max_tokens=2000, streaming=True)
 
     all_docs = state.documents
-    summarized_docs = summarize_documents(all_docs)
-    context = format_docs(summarized_docs)
-    logger.info(f"Context length: {len(context)}")
+    if not all_docs:
+        logger.warning("No documents found in state for detailed answer generation.")
+        return {"detailed_answer": "No relevant documents were found to answer the query."}
 
+    # *** REVERT: Use summarize_documents again, but it now uses max_length=6000 ***
+    summarized_docs_list = summarize_documents(all_docs) # This now returns a list with one doc
+    if not summarized_docs_list:
+         logger.warning("Summarization resulted in empty content.")
+         return {"detailed_answer": "Could not generate context from documents."}
 
+    # Use format_docs on the list containing the single summarized document
+    context = format_docs(summarized_docs_list)
+    logger.info(f"Context length for detailed answer (using summarized docs, max_length=6000): {len(context)}")
+    # logger.debug(f"SUMMARIZED CONTEXT being sent to LLM for detailed answer:\n---\n{context}\n---") # Optional debug
+
+    # Use the existing RESPONSE_SYSTEM_PROMPT
     prompt = RESPONSE_SYSTEM_PROMPT.format(context=context)
     messages = [SystemMessage(content=prompt)] + state.messages
 
     try:
-        # Add a timeout to the LLM call
-        response = await asyncio.wait_for(model.ainvoke(messages), timeout=60.0)  # 60-second timeout
-        logger.info(f"Raw LLM response: {response.content}") # Log the complete response
+        # Use invoke for non-streaming or handle streaming differently if needed later
+        response = await asyncio.wait_for(model.ainvoke(messages), timeout=90.0) # Keep timeout
+        logger.info(f"Raw LLM detailed answer: {response.content}")
+
+        # Perform cleaning specific to the detailed answer
+        cleaned_detailed_answer = _extract_answer(response.content) # Use existing cleaning
+        logger.info(f"Cleaned detailed answer: {cleaned_detailed_answer}")
+
+        # Store the cleaned detailed answer in the state
+        return {"detailed_answer": cleaned_detailed_answer}
 
     except asyncio.TimeoutError:
-        logger.error("Groq API call timed out!")
-        return {"messages": [SystemMessage(content="I am sorry, but the request timed out. Please try again.")]}
+        logger.error("Groq API call timed out during detailed answer generation!")
+        return {"detailed_answer": "I am sorry, but the request timed out while generating the detailed answer."}
     except Exception as e:
-        logger.exception(f"Error during response generation: {e}")
-        return {"messages": [SystemMessage(content=f"An unexpected error occurred: {e}")]}
+        # Log the specific error, especially API errors
+        logger.exception(f"Error during detailed answer generation: {e}")
+        # Check if it's an API error and include details if possible
+        error_message = f"An unexpected error occurred: {e}"
+        if hasattr(e, 'message'): # Handle potential Groq API error structure
+             error_message = f"API Error: {getattr(e, 'message', str(e))}"
+        elif hasattr(e, 'body'): # Handle potential OpenAI/other API error structure
+             error_message = f"API Error: {getattr(e, 'body', str(e))}"
 
-    # --- Aggressive Post-Processing and Extraction ---
-    cleaned_response_content = _extract_answer(response.content)
-    logger.info(f"Cleaned response: {cleaned_response_content}")
+        return {"detailed_answer": f"An error occurred while generating the detailed answer: {error_message}"}
 
-    return {"messages": [type(response)(content=cleaned_response_content, additional_kwargs=response.additional_kwargs)]}
+
+
+# ... (keep the rest of the file, including format_docs, _extract_answer, etc.) ...
+
+# Note: The summarize_documents function in utils/summarizer.py is now only used by check_hallucinations.
+# You might consider if check_hallucinations also needs the full context or if summarized is sufficient there.
+# For now, we only change generate_detailed_answer.
+
+def format_final_response(state: AgentState) -> dict[str, list[BaseMessage]]:
+    """
+    Combines the generated summary and detailed answer into the final response format.
+    """
+    logger.info("--- FORMATTING FINAL RESPONSE ---")
+    summary = state.summary
+    detailed_answer = state.detailed_answer
+
+    # Combine summary and detailed answer
+    if summary and len(detailed_answer) > 0 and not detailed_answer.startswith("Could not generate") and not detailed_answer.startswith("I am sorry"):
+        # Prepend summary only if detailed answer is substantial and not an error/apology
+         # Check if summary is already contained within the detailed answer to avoid repetition
+        if summary.lower() not in detailed_answer.lower()[:len(summary)+50]: # Check beginning
+            final_content = f"**Key Finding:** {summary}\n\n{detailed_answer}"
+        else:
+            final_content = detailed_answer # Summary seems redundant
+    else:
+        # If no good summary or detailed answer, just use the detailed answer (or summary if that's all there is)
+        final_content = detailed_answer or summary or "I could not generate a response."
+
+    # Return in the expected message format
+    # We need a placeholder BaseMessage type; using SystemMessage for simplicity,
+    # but ideally, it should match the type expected by the graph's end state.
+    return {"messages": [SystemMessage(content=final_content)]}
+
+
 
 checkpointer = MemorySaver()
 
 builder = StateGraph(AgentState, input=InputState)
-builder.add_node("analyze_and_route_query", analyze_and_route_query)  # Use string names for nodes
-builder.add_edge(START, "analyze_and_route_query")
-builder.add_conditional_edges("analyze_and_route_query", route_query)
+
+# Add Nodes
+builder.add_node("analyze_and_route_query", analyze_and_route_query)
 builder.add_node("create_research_plan", create_research_plan)
+builder.add_node("conduct_research", conduct_research)
+# builder.add_node("generate_summary_from_docs", generate_summary_from_docs) # REMOVE THIS NODE
+builder.add_node("generate_detailed_answer", generate_detailed_answer)
+builder.add_node("extract_summary_from_answer", extract_summary_from_answer) # ADD THIS NEW NODE
+builder.add_node("check_hallucinations", check_hallucinations)
+builder.add_node("format_final_response", format_final_response)
 builder.add_node("ask_for_more_info", ask_for_more_info)
 builder.add_node("respond_to_general_query", respond_to_general_query)
-builder.add_node("conduct_research", conduct_research)
-builder.add_node("respond", respond)
-builder.add_node("check_hallucinations", check_hallucinations)
 
-builder.add_conditional_edges("check_hallucinations", human_approval, {True: "respond", False: END})
+# Define Edges
+builder.add_edge(START, "analyze_and_route_query")
+builder.add_conditional_edges("analyze_and_route_query", route_query)
 
+# Research Path
 builder.add_edge("create_research_plan", "conduct_research")
-builder.add_conditional_edges("conduct_research", check_finished)
+builder.add_conditional_edges(
+    "conduct_research",
+    check_finished,
+    {
+        "conduct_research": "conduct_research",
+        # Change "respond" target to generate_detailed_answer
+        "respond": "generate_detailed_answer"
+    }
+)
+# builder.add_edge("generate_summary_from_docs", "generate_detailed_answer") # REMOVE THIS EDGE
+builder.add_edge("generate_detailed_answer", "extract_summary_from_answer") # ADD EDGE to new node
+builder.add_edge("extract_summary_from_answer", "check_hallucinations") # ADD EDGE from new node
 
-builder.add_edge("respond", "check_hallucinations")
+# Hallucination Check and Final Output
+builder.add_conditional_edges(
+    "check_hallucinations",
+    human_approval,
+    {
+        "format_final_response": "format_final_response",
+        "y": "format_final_response"
+    }
+)
+
+builder.add_edge("format_final_response", END)
+
+# Other Paths
+builder.add_edge("ask_for_more_info", END)
+builder.add_edge("respond_to_general_query", END)
 
 graph = builder.compile(checkpointer=checkpointer)
-
-
-

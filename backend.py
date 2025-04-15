@@ -11,6 +11,13 @@ from main_graph.graph_builder import graph  # Import your LangGraph
 from main_graph.graph_states import InputState
 from utils.utils import new_uuid
 
+# Add missing logger import
+import logging
+
+# At the top of the file with other imports
+logger = logging.getLogger(__name__)
+
+
 app = FastAPI()
 
 # CORS (Cross-Origin Resource Sharing) setup: Allow requests from your frontend
@@ -259,7 +266,20 @@ async def websocket_endpoint(websocket: WebSocket):
     except Exception as e:
         print(f"Error: {e}")
 
+# In backend.py
 
+@app.websocket("/ws/feedback")
+async def feedback_endpoint(websocket: WebSocket):
+    await websocket.accept()
+    
+    try:
+        data = await websocket.receive_json()
+        if "feedback" in data and "message_id" in data:
+            # Store feedback for future improvements
+            logger.info(f"Received feedback for message {data['message_id']}: {data['feedback']}")
+            await websocket.send_json({"status": "Feedback received"})
+    except WebSocketDisconnect:
+        pass
 
 @app.get("/")
 async def read_root():

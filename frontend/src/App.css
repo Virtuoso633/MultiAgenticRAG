@@ -277,3 +277,169 @@ th {
     z-index: 1000;
     box-shadow: 0 4px 8px rgba(0,0,0,0.2);
 }
+
+/* Add these styles to the existing CSS file */
+
+/* Message summary */
+.message-summary {
+    font-style: italic;
+    margin-bottom: 8px;
+    padding: 5px;
+    background-color: rgba(0,0,0,0.03);
+    border-radius: 4px;
+  }
+  
+  /* Message footer */
+  .message-footer {
+    display: flex;
+    margin-top: 8px;
+    gap: 8px;
+  }
+  
+  /* Source and feedback buttons */
+  .sources-button, .feedback-button {
+    font-size: 0.8rem;
+    padding: 4px 8px;
+    background-color: transparent;
+    color: #555;
+    border: 1px solid #ccc;
+    border-radius: 12px;
+  }
+  
+  .dark-mode .sources-button, .dark-mode .feedback-button {
+    color: #ccc;
+    border-color: #555;
+  }
+  
+  /* Sources panel */
+  .sources-panel {
+    margin-top: 10px;
+    padding: 10px;
+    background-color: #f5f5f5;
+    border-radius: 8px;
+    font-size: 0.9rem;
+  }
+  
+  .dark-mode .sources-panel {
+    background-color: #333;
+  }
+  
+  .source-item {
+    padding: 5px 0;
+    border-bottom: 1px solid #eee;
+  }
+  
+  .dark-mode .source-item {
+    border-bottom-color: #444;
+  }
+  
+  /* Feedback panel */
+  .feedback-panel {
+    margin-top: 10px;
+    padding: 10px;
+    background-color: #f5f5f5;
+    border-radius: 8px;
+    text-align: center;
+  }
+  
+  .dark-mode .feedback-panel {
+    background-color: #333;
+  }
+  
+  .feedback-buttons {
+    display: flex;
+    justify-content: center;
+    gap: 10px;
+    margin-top: 8px;
+  }
+  
+  /* Interrupt popup */
+  .interrupt-popup {
+    position: fixed;
+    top: 50%;
+    left: 50%;
+    transform: translate(-50%, -50%);
+    background-color: #fff;
+    border-radius: 8px;
+    box-shadow: 0 4px 20px rgba(0,0,0,0.2);
+    padding: 20px;
+    z-index: 1000;
+    max-width: 500px;
+    width: 80%;
+  }
+  
+  .dark-mode .interrupt-popup {
+    background-color: #333;
+    color: #fff;
+  }
+  
+  .interrupt-popup h3 {
+    margin-top: 0;
+    color: #d32f2f;
+  }
+  
+  .dark-mode .interrupt-popup h3 {
+    color: #ff6b6b;
+  }
+  
+  .interrupt-content {
+    margin: 15px 0;
+  }
+  
+  .interrupt-actions {
+    display: flex;
+    justify-content: flex-end;
+    gap: 10px;
+  }
+  
+  .interrupt-actions button {
+    padding: 8px 16px;
+  }
+
+  /* Add to your existing CSS */
+
+.feedback-button-positive {
+    background-color: #4CAF50;
+    color: white;
+    border: none;
+    padding: 8px 16px;
+    border-radius: 4px;
+    cursor: pointer;
+    font-weight: 500;
+    transition: background-color 0.2s;
+  }
+  
+  .feedback-button-negative {
+    background-color: #f44336;
+    color: white;
+    border: none;
+    padding: 8px 16px;
+    border-radius: 4px;
+    cursor: pointer;
+    font-weight: 500;
+    transition: background-color 0.2s;
+  }
+  
+  .feedback-button-positive:hover {
+    background-color: #3e8e41;
+  }
+  
+  .feedback-button-negative:hover {
+    background-color: #d32f2f;
+  }
+  
+  /* Improve summary styling for better visibility */
+  .message-summary {
+    font-style: normal;
+    margin-bottom: 12px;
+    padding: 8px 12px;
+    background-color: rgba(0,0,0,0.05);
+    border-left: 3px solid #4CAF50;
+    border-radius: 0 4px 4px 0;
+    font-weight: 500;
+  }
+  
+  .dark-mode .message-summary {
+    background-color: rgba(255,255,255,0.05);
+    border-left: 3px solid #8fd3f4;
+  }

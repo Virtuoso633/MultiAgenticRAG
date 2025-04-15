@@ -69,8 +69,8 @@ class GradeHallucinations(BaseModel):
     )
 
 
-# Primary agent state
 
+# Primary agent state
 @dataclass(kw_only=True)
 class AgentState(InputState):
     """State of the retrieval graph / agent."""
@@ -81,4 +81,7 @@ class AgentState(InputState):
     """A list of steps in the research plan."""
     documents: Annotated[list[Document], reduce_docs] = field(default_factory=list)
     """Populated by the retriever. This is a list of documents that the agent can reference."""
+    summary: str = "" # ADD THIS LINE: To store the concise summary
+    detailed_answer: str = "" # ADD THIS LINE: To store the detailed answer before final formatting
     hallucination: GradeHallucinations = field(default_factory=lambda: GradeHallucinations(binary_score="0"))
+    interrupts: dict = field(default_factory=dict) # ADD THIS LINE: To store interrupt data

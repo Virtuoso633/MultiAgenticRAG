@@ -1,5 +1,8 @@
 # utils/summarizer.py
 
+import logging
+
+logger = logging.getLogger(__name__)
 from langchain_core.documents import Document  # Import Document
 
 def truncate_text(text: str, max_length: int = 1500) -> str:
@@ -10,23 +13,29 @@ def truncate_text(text: str, max_length: int = 1500) -> str:
     return text if len(text) <= max_length else text[:max_length] + "..."
 
 
-def summarize_documents(docs: list, max_length: int = 1500) -> list[Document]:
+# Increase the default max_length significantly
+def summarize_documents(docs: list[Document], max_length: int = 6000) -> list[Document]:
     """
-    Given a list of Document objects, concatenate their content, then truncate the result.
-    Returns a list containing a single Document object with the summarized content.
+    Concatenates page content of documents and truncates to max_length.
+    Returns a single Document with the summarized content.
     """
+    logger.info(f"Summarizing {len(docs)} documents with max_length={max_length}")
     if not docs:
-        return []  # Handle empty document list
+        return []
 
-    combined_text = ""
-    for doc in docs:
-        if doc.page_content:  # Only add if the document has content
-            combined_text += doc.page_content + "\n"  # Add a newline between documents for readability
+    # Concatenate content from all documents
+    full_content = "\n\n".join([doc.page_content for doc in docs])
 
-    if not combined_text:
-        return [] #Handle empty combined text
+    # Truncate if necessary
+    if len(full_content) > max_length:
+        truncated_content = full_content[:max_length]
+        logger.warning(f"Combined document content length ({len(full_content)}) exceeded max_length ({max_length}). Truncated.")
+    else:
+        truncated_content = full_content
+        logger.info(f"Combined document content length: {len(truncated_content)}")
 
-    #Truncate the combined text using a maximum length
-    truncated_text = truncate_text(combined_text, max_length=max_length)
-    return [Document(page_content=truncated_text)]  # Wrap in Document object
 
+    # Return as a single Document (or adjust if downstream expects list)
+    # Assuming downstream like format_docs can handle a list with one item
+    summary_doc = Document(page_content=truncated_content, metadata={"source": "summarized_context"})
+    return [summary_doc] # Return as a list containing one document
