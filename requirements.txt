@@ -4,8 +4,12 @@ chromadb
 langchain
 langchain-core
 langchain-community
+langgraph
+langchain-groq
 langchain-openai
 langchain_cohere
+pydantic
+sentence-transformers
 docling
 cohere
 pypdf

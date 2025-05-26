@@ -104,6 +104,13 @@ def _build_retrievers(documents: list[Document], vectorstore: Chroma) -> Ensembl
     return ensemble_retriever
 
 
+vectorstore = _setup_vectorstore()
+documents = _load_documents(vectorstore)
+
+# Build the ensemble retriever (without Cohere)
+ensemble_retriever = _build_retrievers(documents, vectorstore)  # Changed to build only the EnsembleRetriever
+
+
 async def generate_queries(
     state: ResearcherState, *, config: RunnableConfig
 ) -> dict[str, list[str]]:
@@ -133,6 +140,27 @@ async def generate_queries(
     queries.append(state.question)
     logger.info(f"Queries: {queries}")
     return {"queries": response["queries"]}
+
+
+def retrieve_in_parallel(state: ResearcherState) -> list[Send]:
+    """Create parallel retrieval tasks for each generated query.
+
+    This function prepares parallel document retrieval tasks for each query in the researcher's state.
+
+    Args:
+        state (ResearcherState): The current state of the researcher, including the generated queries.
+
+    Returns:
+        Literal["retrieve_documents"]: A list of Send objects, each representing a document retrieval task.
+
+    Behavior:
+        - Creates a Send object for each query in the state.
+        - Each Send object targets the "retrieve_documents" node with the corresponding query.
+    """
+    return [
+        Send("retrieve_and_rerank_documents", QueryState(query=query)) for query in state.queries
+    ]
+
 
 
 async def retrieve_and_rerank_documents(
@@ -190,33 +218,6 @@ async def retrieve_and_rerank_documents(
     # Log only the number of documents, not their content
     logger.info(f"Returning {len(ranked_documents)} ranked documents.")
     return {"documents": ranked_documents}
-
-
-vectorstore = _setup_vectorstore()
-documents = _load_documents(vectorstore)
-
-# Build the ensemble retriever (without Cohere)
-ensemble_retriever = _build_retrievers(documents, vectorstore)  # Changed to build only the EnsembleRetriever
-
-
-def retrieve_in_parallel(state: ResearcherState) -> list[Send]:
-    """Create parallel retrieval tasks for each generated query.
-
-    This function prepares parallel document retrieval tasks for each query in the researcher's state.
-
-    Args:
-        state (ResearcherState): The current state of the researcher, including the generated queries.
-
-    Returns:
-        Literal["retrieve_documents"]: A list of Send objects, each representing a document retrieval task.
-
-    Behavior:
-        - Creates a Send object for each query in the state.
-        - Each Send object targets the "retrieve_documents" node with the corresponding query.
-    """
-    return [
-        Send("retrieve_and_rerank_documents", QueryState(query=query)) for query in state.queries
-    ]
 
 
 builder = StateGraph(ResearcherState)

@@ -85,18 +85,24 @@ class IndexBuilder:
             EnsembleRetriever: Combined retriever using BM25 and vector-based methods.
         """
         try:
+
             logger.info("Building BM25 retriever.")
+            # 1. BM25 Retriever (keyword-based)
             bm25_retriever = BM25Retriever.from_documents(self.docs_list, search_kwargs={"k": 4})
 
             logger.info("Building vector-based retrievers.")
+            # 2. Vector Similarity Retriever
             retriever_vanilla = self.vectorstore.as_retriever(
                 search_type="similarity", search_kwargs={"k": 4}
             )
+
+            # 3. MMR (Maximal Marginal Relevance) Retriever
             retriever_mmr = self.vectorstore.as_retriever(
                 search_type="mmr", search_kwargs={"k": 4}
             )
 
             logger.info("Combining retrievers into an ensemble retriever.")
+            # 4. Ensemble Retriever (combines all three)
             ensemble_retriever = EnsembleRetriever(
                 retrievers=[retriever_vanilla, retriever_mmr, bm25_retriever],
                 weights=[0.3, 0.3, 0.4],
