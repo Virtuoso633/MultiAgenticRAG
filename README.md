@@ -20,6 +20,9 @@ Unlike simple chatbots, RAGHive is a **sophisticated research assistant** that:
 
 ## 🏗️ **System Architecture**
 
+<img width="2390" height="1800" alt="Screenshot 2025-12-30 at 5 56 01 PM-modified" src="https://github.com/user-attachments/assets/59bbe4f5-4bde-4007-bed8-81f948ea51ea" />
+
+
 ```mermaid
 graph TD
     A[User Query] --> B[Query Analyzer]
